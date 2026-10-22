@@ -1,0 +1,11 @@
+{
+  "name": "com.sebaslab.polysmith",
+  "version": "0.1.0",
+  "displayName": "Polysmith",
+  "description": "Editor tool: right-click a prefab, Assets > Optimise in Polysmith, to reduce its meshes in Polysmith. Every export comes back as new mesh assets the prefab uses; the original meshes are never changed.",
+  "unity": "6000.0",
+  "author": {
+    "name": "Sebastiano Mandalà"
+  },
+  "license": "MIT"
+}
