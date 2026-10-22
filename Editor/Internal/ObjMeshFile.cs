@@ -10,24 +10,37 @@ namespace Polysmith
 {
     /// <summary>
     /// Unity meshes to OBJ objects and back, in the convention Unity's OBJ importer reads: X is negated, so the winding
-    /// is reversed to keep triangles facing outward. Submesh n is the material group "slot{n}". Each mesh is written
-    /// placed in the prefab (its placement maps mesh space to prefab space), so Polysmith shows the model assembled.
+    /// is reversed to keep triangles facing outward. Submesh n is the material group groups[n], defined in the MTL.
+    /// Each mesh is written placed in the prefab (its placement maps mesh space to prefab space), so Polysmith shows
+    /// the model assembled.
     /// </summary>
     static class ObjMeshFile
     {
-        public static string GroupName(int submesh) => "slot" + submesh.ToString(CultureInfo.InvariantCulture);
-
         // X is mirrored, which turns triangles inside out; a mirrored placement turns them back.
         public static bool ReversesWinding(Matrix4x4 placement) => placement.determinant >= 0;
 
-        /// <summary>
-        /// Reads an OBJ that holds one object, written with <paramref name="placement"/>, back into mesh space, with
-        /// <paramref name="submeshCount"/> submeshes each from its own group; a group that is missing gives an empty
-        /// submesh. Returns null, with a warning, when a group is not one of ours (Polysmith names atlas and billboard
-        /// groups its own way).
-        /// </summary>
-        public static Mesh Read(string path, int submeshCount, Matrix4x4 placement, List<string> warnings)
+        /// <summary>One material per group, with its colour.</summary>
+        public static string Mtl(Dictionary<string, Color> colours)
         {
+            var mtl = new StringBuilder();
+            foreach (var pair in colours)
+                mtl.Append("newmtl ").AppendLine(pair.Key)
+                    .Append("Kd ").Append(Format(pair.Value.r)).Append(' ').Append(Format(pair.Value.g)).Append(' ')
+                    .AppendLine(Format(pair.Value.b));
+            return mtl.ToString();
+        }
+
+        // G9 writes every float exactly.
+        public static string Format(float value) => value.ToString("G9", CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// Reads an OBJ that holds one object, written with <paramref name="placement"/>, back into mesh space, with one
+        /// submesh per entry of <paramref name="groups"/>; a group that is missing gives an empty submesh. Returns null,
+        /// with a warning, when a group is not one of ours.
+        /// </summary>
+        public static Mesh Read(string path, IReadOnlyList<string> groups, Matrix4x4 placement, List<string> warnings)
+        {
+            int submeshCount = groups.Count;
             var positions = new List<Vector3>();
             var uvs = new List<Vector2>();
             var normals = new List<Vector3>();
@@ -57,7 +70,7 @@ namespace Polysmith
                         break;
                     case "usemtl":
                         string group = tokens.Length > 1 ? tokens[1] : "";
-                        current = SubmeshOf(group, submeshCount);
+                        current = IndexOf(groups, group);
                         if (current < 0)
                         {
                             warnings.Add($"'{path}' has material group '{group}', which is not one of the mesh's " +
@@ -109,10 +122,10 @@ namespace Polysmith
             return mesh;
         }
 
-        static int SubmeshOf(string group, int submeshCount)
+        static int IndexOf(IReadOnlyList<string> groups, string group)
         {
-            for (int submesh = 0; submesh < submeshCount; submesh++)
-                if (group == GroupName(submesh))
+            for (int submesh = 0; submesh < groups.Count; submesh++)
+                if (groups[submesh] == group)
                     return submesh;
             return -1;
         }
@@ -147,8 +160,16 @@ namespace Polysmith
     /// <summary>Writes Unity meshes as the objects of one OBJ file (see <see cref="ObjMeshFile"/>).</summary>
     sealed class ObjWriter
     {
-        /// <summary>Appends <paramref name="mesh"/> placed by <paramref name="placement"/> (mesh space to prefab space).</summary>
-        public void Append(string objectName, Mesh mesh, Matrix4x4 placement)
+        public ObjWriter(string mtlFile)
+        {
+            _obj.Append("mtllib ").AppendLine(mtlFile);
+        }
+
+        /// <summary>
+        /// Appends <paramref name="mesh"/> placed by <paramref name="placement"/> (mesh space to prefab space), submesh n
+        /// as group <paramref name="groups"/>[n].
+        /// </summary>
+        public void Append(string objectName, Mesh mesh, Matrix4x4 placement, IReadOnlyList<string> groups)
         {
             var vertices = mesh.vertices;
             var normals = mesh.normals;
@@ -176,7 +197,7 @@ namespace Polysmith
 
             for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
             {
-                _obj.Append("usemtl ").AppendLine(ObjMeshFile.GroupName(submesh));
+                _obj.Append("usemtl ").AppendLine(groups[submesh]);
                 int[] triangles = mesh.GetTriangles(submesh);
                 for (int t = 0; t < triangles.Length; t += 3)
                 {
@@ -205,8 +226,7 @@ namespace Polysmith
 
         public override string ToString() => _obj.ToString();
 
-        // G9 writes every float exactly.
-        static string Format(float value) => value.ToString("G9", CultureInfo.InvariantCulture);
+        static string Format(float value) => ObjMeshFile.Format(value);
 
         readonly StringBuilder _obj = new StringBuilder();
         int _positions;

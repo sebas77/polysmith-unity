@@ -25,9 +25,15 @@ The first run asks where it is, and Unity remembers it per machine.
 Each reduced mesh is saved as `<prefab folder>/Reduced/<prefab>/<part>.asset` and labelled `PolysmithReduced`; the
 prefab's MeshFilters point at it. The original meshes are never changed. Running it again overwrites the same assets.
 
+Material groups follow the prefab's materials, so Polysmith bakes one atlas per material. When an export carries atlas
+maps (colour, normal, occlusion, metal-rough, emissive), each becomes a texture asset with exactly Polysmith's mip
+levels, and each material gets a reduced copy (`Reduced/<prefab>/<material>.mat`) using them. Normal-mapped parts are
+read through Unity's OBJ importer so their tangents are MikkTSpace, matching Polysmith's bake.
+
 ## Limits
 
 - Prefab assets only, not model files (FBX, OBJ) and not objects in a scene.
-- Meshes come back with positions, normals, the first UV set and their submeshes. Vertex colours, other UV sets,
-  tangents and blend shapes are not kept.
+- Meshes come back with positions, normals, the first UV set (the atlas UVs when there are maps), tangents when
+  there is a normal map, and their submeshes. Vertex colours, other UV sets and blend shapes are not kept.
+- Material properties follow the URP Lit and Built-in Standard shaders.
 - Don't edit the prefab while Polysmith is open: each export saves it.
