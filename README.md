@@ -26,9 +26,10 @@ Each reduced mesh is saved as `<prefab folder>/Reduced/<prefab>/<part>.asset` an
 prefab's MeshFilters point at it. The original meshes are never changed. Running it again overwrites the same assets.
 
 Material groups follow the prefab's materials, so Polysmith bakes one atlas per material. When an export carries atlas
-maps (colour, normal, occlusion, metal-rough, emissive), each becomes a texture asset with exactly Polysmith's mip
-levels, and each material gets a reduced copy (`Reduced/<prefab>/<material>.mat`) using them. Normal-mapped parts are
-read through Unity's OBJ importer so their tangents are MikkTSpace, matching Polysmith's bake.
+maps (colour, normal, occlusion, metal-rough, emissive), each is saved as a PNG in `Reduced/<prefab>/` (occlusion and
+metal-rough repacked to Unity's channels) and imported with the settings its kind needs; Unity builds its mips. Each
+material gets a reduced copy (`Reduced/<prefab>/<material>.mat`) using them. Normal-mapped parts are read through
+Unity's OBJ importer so their tangents are MikkTSpace, matching Polysmith's bake.
 
 ## Limits
 
