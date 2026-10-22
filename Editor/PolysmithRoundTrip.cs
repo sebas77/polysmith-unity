@@ -78,6 +78,10 @@ namespace Polysmith
                 if (built == null)
                     continue;
                 built.name = part.Name;
+                // As Unity's model importer does: buffers reordered for the GPU's vertex cache, and the UV metric texture
+                // streaming picks mip levels from (meshes built in code have none).
+                built.Optimize();
+                built.RecalculateUVDistributionMetrics();
                 replacements[part.Mesh] = (Save(built, output), SlotMaterials(part, exported, materials, warnings));
             }
 
