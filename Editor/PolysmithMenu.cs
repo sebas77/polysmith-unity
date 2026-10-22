@@ -51,7 +51,8 @@ namespace Polysmith
             }
             foreach (string warning in warnings)
                 Debug.LogWarning("Polysmith: " + warning);
-            using (var process = Process.Start(new ProcessStartInfo(exe, $"\"{request}\"")
+            // --unity-roundtrip shows Polysmith's "Replace prefab mesh" button, which writes every part's result file.
+            using (var process = Process.Start(new ProcessStartInfo(exe, $"\"{request}\" --unity-roundtrip")
                    {
                        UseShellExecute = false,
                        WorkingDirectory = WorkingFolder(exe)

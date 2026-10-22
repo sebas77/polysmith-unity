@@ -10,14 +10,16 @@ Package Manager → **+** → **Add package from git URL…**:
 https://github.com/sebas77/polysmith-unity.git
 ```
 
-You also need `Polysmith.exe`. The first run asks where it is, and Unity remembers it per machine.
+You also need `Polysmith.exe`, a build that accepts `--unity-roundtrip` (it adds the "Replace prefab mesh" button).
+The first run asks where it is, and Unity remembers it per machine.
 
 ## Use
 
 1. In the Project window, right-click a prefab → **Optimise in Polysmith**. Its meshes open in Polysmith, placed as the
    prefab shows them.
-2. Reduce them, then export with **Export OBJ…**, keeping the suggested `<part>_lod.obj` name and folder. Every export
-   updates the prefab in Unity straight away, so you can look at it and export again.
+2. Reduce them, then press **Replace prefab mesh**, which writes every part. **Export OBJ…** also works for one part
+   at a time; keep the suggested `<part>_lod.obj` name and folder. Every export updates the prefab in Unity straight
+   away, so you can look at it and export again.
 3. Close Polysmith to finish.
 
 Each reduced mesh is saved as `<prefab folder>/Reduced/<prefab>/<part>.asset` and labelled `PolysmithReduced`; the
