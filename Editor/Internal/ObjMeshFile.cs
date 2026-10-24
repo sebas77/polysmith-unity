@@ -19,14 +19,22 @@ namespace Polysmith
         // X is mirrored, which turns triangles inside out; a mirrored placement turns them back.
         public static bool ReversesWinding(Matrix4x4 placement) => placement.determinant >= 0;
 
-        /// <summary>One material per group, with its colour.</summary>
-        public static string Mtl(Dictionary<string, Color> colours)
+        /// <summary>One material per group, with its colour and the maps it has (colour <c>map_Kd</c>, normal <c>norm</c>).</summary>
+        public static string Mtl(Dictionary<string, Color> colours, Dictionary<string, (string Colour, string Normal)> maps)
         {
             var mtl = new StringBuilder();
             foreach (var pair in colours)
+            {
                 mtl.Append("newmtl ").AppendLine(pair.Key)
                     .Append("Kd ").Append(Format(pair.Value.r)).Append(' ').Append(Format(pair.Value.g)).Append(' ')
                     .AppendLine(Format(pair.Value.b));
+                if (maps.TryGetValue(pair.Key, out var map) == false)
+                    continue;
+                if (map.Colour != null)
+                    mtl.Append("map_Kd ").AppendLine(map.Colour);
+                if (map.Normal != null)
+                    mtl.Append("norm ").AppendLine(map.Normal);
+            }
             return mtl.ToString();
         }
 

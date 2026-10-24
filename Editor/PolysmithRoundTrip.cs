@@ -27,6 +27,13 @@ namespace Polysmith
         /// </summary>
         public const string ReducedLabel = "PolysmithReduced";
 
+        // Image files a material's texture can be handed to Polysmith as: what raylib or Windows WIC decodes.
+        static readonly string[] ImageExtensions =
+        {
+            ".png", ".jpg", ".tga", ".bmp", ".psd", ".gif", ".hdr", ".pic", ".pnm", ".ppm", ".pgm", ".qoi", ".tif",
+            ".tiff"
+        };
+
         /// <summary>
         /// Writes the request OBJ into <paramref name="folder"/> and returns its path. Throws when the prefab has no
         /// mesh to send (Polysmith cannot open an empty file), e.g. when its meshes are built at run time.
@@ -43,10 +50,54 @@ namespace Polysmith
             var writer = new ObjWriter(stem + ".mtl");
             foreach (var part in objects)
                 writer.Append(part.Name, part.Mesh, part.Placement, part.Groups);
-            File.WriteAllText(Path.Combine(folder, stem + ".mtl"), ObjMeshFile.Mtl(colours));
+            var maps = new Dictionary<string, (string Colour, string Normal)>();
+            foreach (var part in objects)
+                for (int submesh = 0; submesh < part.Groups.Length; submesh++)
+                {
+                    var material = submesh < part.Materials.Length ? part.Materials[submesh] : null;
+                    if (material != null && maps.ContainsKey(part.Groups[submesh]) == false)
+                        maps[part.Groups[submesh]] = Maps(part.Groups[submesh], material, folder, warnings);
+                }
+            File.WriteAllText(Path.Combine(folder, stem + ".mtl"), ObjMeshFile.Mtl(colours, maps));
             string path = Path.Combine(folder, stem + ".obj");
             File.WriteAllText(path, writer.ToString());
             return path;
+        }
+
+        // The maps Polysmith shows and bakes: the material's colour map (map_Kd) and normal map (norm). Its loader
+        // reads no other kinds. The files are copied beside the OBJ so the MTL never depends on project paths.
+        static (string Colour, string Normal) Maps(string group, Material material, string folder, List<string> warnings)
+        {
+            return (CopyMap(material, "_BaseMap", "_MainTex", group + "_base", folder, warnings),
+                    CopyMap(material, "_BumpMap", null, group + "_normal", folder, warnings));
+        }
+
+        // The image file of a texture property, copied as "<name><ext>"; null when the material has none. An asset
+        // that is not a separate image file (embedded in a model, or a package asset with no path on disk) cannot be
+        // read by Polysmith, so it is left out with a warning.
+        static string CopyMap(Material material, string property, string fallback, string name, string folder,
+            List<string> warnings)
+        {
+            Texture texture = material.HasProperty(property) ? material.GetTexture(property) : null;
+            if (texture == null && fallback != null && material.HasProperty(fallback))
+                texture = material.GetTexture(fallback);
+            if (texture == null)
+                return null;
+            string assetPath = AssetDatabase.GetAssetPath(texture);
+            string extension = Path.GetExtension(assetPath).ToLowerInvariant();
+            // Polysmith's image loader picks the decoder by extension and knows ".jpg", not ".jpeg".
+            if (extension == ".jpeg")
+                extension = ".jpg";
+            string source = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Application.dataPath), assetPath));
+            if (Array.IndexOf(ImageExtensions, extension) < 0 || File.Exists(source) == false)
+            {
+                warnings.Add($"Material '{material.name}' has a {property} that is not an image file on disk " +
+                             $"('{assetPath}'); it was not sent.");
+                return null;
+            }
+            string file = name + extension;
+            File.Copy(source, Path.Combine(folder, file), true);
+            return file;
         }
 
         /// <summary>Applies the "_lod.obj" files in <paramref name="folder"/> and returns the reduced mesh assets.</summary>
@@ -122,13 +173,13 @@ namespace Polysmith
         }
 
         // Distinct meshes in hierarchy order, each named after its mesh and made unique, and placed where its first
-        // MeshFilter shows it relative to the prefab root. Only triangle meshes go: Polysmith reduces triangles.
+        // MeshFilter shows it in the prefab (the root's own rotation and scale included, so it stands as the prefab
+        // does). Only triangle meshes go: Polysmith reduces triangles.
         // Each submesh's group is named after the material its first renderer shows there, so Polysmith gives every
         // material one atlas shared by the parts that use it; `colours` collects each group's colour for the MTL.
         static List<Part> Objects(GameObject prefab, List<string> warnings, Dictionary<string, Color> colours)
         {
             var objects = new List<Part>();
-            var rootFromWorld = prefab.transform.worldToLocalMatrix;
             var seen = new HashSet<Mesh>();
             // Names become file names, which differ only by more than case on Windows and macOS.
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -162,7 +213,7 @@ namespace Polysmith
                     colours[group] = material != null ? ColourOf(material) : Color.white;
                     groups[submesh] = group;
                 }
-                objects.Add(new Part(unique, mesh, rootFromWorld * filter.transform.localToWorldMatrix, groups, materials));
+                objects.Add(new Part(unique, mesh, filter.transform.localToWorldMatrix, groups, materials));
             }
             return objects;
         }
