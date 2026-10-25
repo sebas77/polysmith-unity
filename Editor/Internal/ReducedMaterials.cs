@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Polysmith
 {
@@ -9,13 +10,46 @@ namespace Polysmith
     /// saved as "&lt;folder&gt;/&lt;group&gt;.mat" and shared by every part that uses the group (Polysmith gives each
     /// group one atlas). Maps the export does not have are cleared, so a copy made from an earlier export never keeps
     /// a map on UVs it no longer matches. Property names are those of the URP and Built-in Lit/Standard shaders.
+    /// A billboard group gets a material of its own (<see cref="GetBillboard"/>).
     /// </summary>
     sealed class ReducedMaterials
     {
+        /// <summary>The alpha a billboard card is cut at: its material's cutoff and its texture's mip coverage value.</summary>
+        public const float Cutoff = 0.5f;
+
         public ReducedMaterials(string folder, AtlasTextures textures)
         {
             _folder = folder;
             _textures = textures;
+        }
+
+        /// <summary>
+        /// The material of a billboard group (Polysmith's textured planes): a copy of <paramref name="source"/>, the
+        /// part's first material, so the cards use the project's shader, with the billboard image as their colour cut
+        /// out at <see cref="Cutoff"/> and every other map cleared, saved as "&lt;folder&gt;/&lt;name&gt;.mat". URP Lit
+        /// draws both faces; Built-in Standard has no such setting and draws the front only (Seb, 2026-10-25).
+        /// <paramref name="name"/> is per part: every part's billboards are named billboard_0, ... by Polysmith.
+        /// </summary>
+        public Material GetBillboard(string name, Material source, MtlMaterial exported, List<string> warnings)
+        {
+            if (_made.TryGetValue(name, out var made))
+                return made;
+
+            var material = new Material(source) { name = name };
+            var image = exported.Maps.TryGetValue(MapKind.Colour, out string level0)
+                ? _textures.Get(level0, MapKind.Billboard, warnings)
+                : null;
+            SetColour(material, image);
+            SetMap(material, "_BumpMap", null, "_NORMALMAP");
+            SetMap(material, "_OcclusionMap", null, "_OCCLUSIONMAP");
+            SetMap(material, "_MetallicGlossMap", null, "_METALLICSPECGLOSSMAP");
+            SetMap(material, "_MetallicGlossMap", null, "_METALLICGLOSSMAP");
+            SetMap(material, "_EmissionMap", null, "_EMISSION");
+            SetCutout(material, warnings);
+
+            made = Save(material, $"{_folder}/{name}.mat");
+            _made[name] = made;
+            return made;
         }
 
         /// <summary>The reduced material for a group, made once per instance from <paramref name="source"/>.</summary>
@@ -75,6 +109,39 @@ namespace Polysmith
                 material.EnableKeyword(keyword);
             else
                 material.DisableKeyword(keyword);
+        }
+
+        // Opaque with alpha clipping, whatever the copied material was (a transparent source would sort and blend the
+        // cards). URP Lit: _Surface, _AlphaClip and _Cull; Built-in Standard: _Mode 1 (Cutout).
+        static void SetCutout(Material material, List<string> warnings)
+        {
+            bool urp = material.HasProperty("_AlphaClip");
+            bool builtIn = material.HasProperty("_Mode");
+            if (urp == false && builtIn == false)
+            {
+                warnings.Add($"Billboard material '{material.name}': its shader '{material.shader.name}' has no alpha " +
+                             "clip setting (URP Lit or Built-in Standard), so its cards draw their whole quads.");
+                return;
+            }
+
+            SetFloat(material, "_Cutoff", Cutoff);
+            SetFloat(material, "_SrcBlend", (float)BlendMode.One);
+            SetFloat(material, "_DstBlend", (float)BlendMode.Zero);
+            SetFloat(material, "_ZWrite", 1);
+            material.DisableKeyword("_ALPHABLEND_ON");
+            material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            material.EnableKeyword("_ALPHATEST_ON");
+            material.SetOverrideTag("RenderType", "TransparentCutout");
+            material.renderQueue = (int)RenderQueue.AlphaTest;
+            if (urp)
+            {
+                SetFloat(material, "_Surface", 0);
+                material.DisableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                material.SetFloat("_AlphaClip", 1);
+                SetFloat(material, "_Cull", (float)CullMode.Off);
+            }
+            else
+                material.SetFloat("_Mode", 1);
         }
 
         static void SetFloat(Material material, string property, float value)

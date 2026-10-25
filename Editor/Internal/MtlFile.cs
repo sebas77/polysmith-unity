@@ -6,14 +6,19 @@ using UnityEngine;
 
 namespace Polysmith
 {
-    /// <summary>The texture maps an atlas export can give a material (see the MTL keys in <see cref="MtlFile"/>).</summary>
+    /// <summary>
+    /// The texture maps an atlas export can give a material (see the MTL keys in <see cref="MtlFile"/>). A billboard
+    /// group's <c>map_Kd</c> is read as <see cref="Colour"/> and imported as <see cref="Billboard"/>: colour with the
+    /// cut-out alpha.
+    /// </summary>
     enum MapKind
     {
         Colour,
         Normal,
         Occlusion,
         MetalRough,
-        Emissive
+        Emissive,
+        Billboard
     }
 
     /// <summary>One MTL material: its flat colour and the level-0 file of each map it has.</summary>

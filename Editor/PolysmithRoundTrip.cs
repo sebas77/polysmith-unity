@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using UnityEditor;
@@ -15,8 +16,11 @@ namespace Polysmith
     /// <item>Polysmith exports each object it reduced as "&lt;object&gt;_lod.obj" next to that OBJ.</item>
     /// <item><see cref="ApplyResults"/> saves each as "&lt;prefab folder&gt;/Reduced/&lt;prefab&gt;/&lt;object&gt;.asset",
     /// labelled <see cref="ReducedLabel"/>, and points every MeshFilter of the prefab that used the mesh at it. Meshes
-    /// without a result stay as they are; original mesh assets are never changed.</item>
+    /// without a result stay as they are; original mesh assets are never changed. Polysmith's billboards come back as
+    /// extra submeshes ("billboard_&lt;n&gt;" groups) with cut-out materials of their own, one more material slot each.</item>
     /// </list>
+    /// A round trip always starts from the ORIGINAL meshes and materials (Seb, 2026-10-25): every reduced mesh
+    /// remembers them (<see cref="Origin"/>), and a prefab that already shows reduced meshes sends their originals.
     /// Precondition: the prefab's meshes and transforms do not change between the two calls, since objects are
     /// matched by name and moved back into mesh space by the same placement.
     /// </summary>
@@ -123,9 +127,10 @@ namespace Polysmith
                 }
 
                 var exported = MtlFile.Read(result);
+                var groups = ObjMeshFile.GroupsOf(result, part.Groups);
                 var built = HasNormalMap(exported)
-                    ? TangentObjImport.Read(result, part.Groups, part.Placement, warnings)
-                    : ObjMeshFile.Read(result, part.Groups, part.Placement, warnings);
+                    ? TangentObjImport.Read(result, groups, part.Placement, warnings)
+                    : ObjMeshFile.Read(result, groups, part.Placement, warnings);
                 if (built == null)
                     continue;
                 built.name = part.Name;
@@ -133,7 +138,9 @@ namespace Polysmith
                 // streaming picks mip levels from (meshes built in code have none).
                 built.Optimize();
                 built.RecalculateUVDistributionMetrics();
-                replacements[part.Mesh] = (Save(built, output), SlotMaterials(part, exported, materials, warnings));
+                var asset = Save(built, output);
+                RememberOrigin(asset, part);
+                replacements[part.Mesh] = (asset, SlotMaterials(part, groups, exported, materials, warnings));
             }
 
             if (replacements.Count > 0)
@@ -152,29 +159,44 @@ namespace Polysmith
             return false;
         }
 
-        // The material per submesh: the reduced one where the export has maps, or where an earlier export left a reduced
-        // material whose maps must go now; null keeps the slot as it is.
-        static Material[] SlotMaterials(Part part, Dictionary<string, MtlMaterial> exported, ReducedMaterials materials,
-            List<string> warnings)
+        // The material per submesh of the result (`groups`: the part's submeshes, then its billboard groups): the reduced
+        // one where the export has maps, or where a reduced material whose maps must go now is the source (a prefab
+        // reduced before origins were kept); else the part's own material, which is the original (Objects). A billboard
+        // group gets its cut-out material, made from the part's first material; null keeps the slot as it is.
+        static Material[] SlotMaterials(Part part, IReadOnlyList<string> groups, Dictionary<string, MtlMaterial> exported,
+            ReducedMaterials materials, List<string> warnings)
         {
-            var slots = new Material[part.Groups.Length];
+            var slots = new Material[groups.Count];
             for (int submesh = 0; submesh < slots.Length; submesh++)
             {
+                exported.TryGetValue(groups[submesh], out var maps);
+                if (submesh >= part.Groups.Length)
+                {
+                    var first = part.Materials.Length > 0 ? part.Materials[0] : null;
+                    if (first == null)
+                        warnings.Add($"'{part.Name}' has billboards but no material to make theirs from; their slot is empty.");
+                    else
+                        slots[submesh] = materials.GetBillboard($"{part.Name}_{groups[submesh]}", first,
+                            maps ?? new MtlMaterial(), warnings);
+                    continue;
+                }
+
                 var source = submesh < part.Materials.Length ? part.Materials[submesh] : null;
                 if (source == null)
                     continue;
-                exported.TryGetValue(part.Groups[submesh], out var maps);
                 bool hasMaps = maps != null && maps.Maps.Count > 0;
                 bool wasReduced = Array.IndexOf(AssetDatabase.GetLabels(source), ReducedLabel) >= 0;
-                if (hasMaps || wasReduced)
-                    slots[submesh] = materials.Get(part.Groups[submesh], source, maps ?? new MtlMaterial(), warnings);
+                slots[submesh] = hasMaps || wasReduced
+                    ? materials.Get(groups[submesh], source, maps ?? new MtlMaterial(), warnings)
+                    : source;
             }
             return slots;
         }
 
         // Distinct meshes in hierarchy order, each named after its mesh and made unique, and placed where its first
         // MeshFilter shows it in the prefab (the root's own rotation and scale included, so it stands as the prefab
-        // does). Only triangle meshes go: Polysmith reduces triangles.
+        // does). Only triangle meshes go: Polysmith reduces triangles. A reduced mesh stands for its original, with the
+        // original's materials (OriginOf): a round trip always starts from the originals.
         // Each submesh's group is named after the material its first renderer shows there, so Polysmith gives every
         // material one atlas shared by the parts that use it; `colours` collects each group's colour for the MTL.
         static List<Part> Objects(GameObject prefab, List<string> warnings, Dictionary<string, Color> colours)
@@ -186,8 +208,11 @@ namespace Polysmith
             var groupOfMaterial = new Dictionary<Material, string>();
             foreach (var filter in prefab.GetComponentsInChildren<MeshFilter>(true))
             {
-                var mesh = filter.sharedMesh;
-                if (mesh == null || seen.Add(mesh) == false)
+                if (filter.sharedMesh == null)
+                    continue;
+                var showing = filter.TryGetComponent(out MeshRenderer renderer) ? renderer.sharedMaterials : new Material[0];
+                var (mesh, materials) = OriginOf(filter.sharedMesh, showing, warnings);
+                if (seen.Add(mesh) == false)
                     continue;
                 if (TrianglesOnly(mesh) == false)
                 {
@@ -201,7 +226,6 @@ namespace Polysmith
                 string unique = name;
                 for (int suffix = 2; names.Add(unique) == false; suffix++)
                     unique = $"{name}_{suffix}";
-                var materials = filter.TryGetComponent(out MeshRenderer renderer) ? renderer.sharedMaterials : new Material[0];
                 var groups = new string[mesh.subMeshCount];
                 for (int submesh = 0; submesh < groups.Length; submesh++)
                 {
@@ -312,6 +336,7 @@ namespace Polysmith
             return folder;
         }
 
+        // `replacements` is keyed by the original mesh; a MeshFilter may show it or an earlier reduction of it.
         static void Repoint(string prefabPath, Dictionary<Mesh, (Mesh Mesh, Material[] Materials)> replacements)
         {
             var contents = PrefabUtility.LoadPrefabContents(prefabPath);
@@ -319,16 +344,28 @@ namespace Polysmith
             {
                 foreach (var filter in contents.GetComponentsInChildren<MeshFilter>(true))
                 {
-                    if (filter.sharedMesh == null || replacements.TryGetValue(filter.sharedMesh, out var reduced) == false)
+                    if (filter.sharedMesh == null)
+                        continue;
+                    var original = OriginOf(filter.sharedMesh, new Material[0], new List<string>()).Mesh;
+                    if (replacements.TryGetValue(original, out var reduced) == false)
                         continue;
                     filter.sharedMesh = reduced.Mesh;
                     if (filter.TryGetComponent(out MeshRenderer renderer) == false)
                         continue;
-                    var slots = renderer.sharedMaterials;
-                    for (int slot = 0; slot < slots.Length && slot < reduced.Materials.Length; slot++)
+                    // One slot per submesh of the result: billboard slots are added after the mesh's own. Surplus slots
+                    // holding a material this tool made are an earlier export's billboards: Unity would draw the last
+                    // submesh again with each, so they go.
+                    var slots = new List<Material>(renderer.sharedMaterials);
+                    int count = reduced.Materials.Length;
+                    while (slots.Count > count && slots[slots.Count - 1] != null &&
+                           Array.IndexOf(AssetDatabase.GetLabels(slots[slots.Count - 1]), ReducedLabel) >= 0)
+                        slots.RemoveAt(slots.Count - 1);
+                    while (slots.Count < count)
+                        slots.Add(null);
+                    for (int slot = 0; slot < count; slot++)
                         if (reduced.Materials[slot] != null)
                             slots[slot] = reduced.Materials[slot];
-                    renderer.sharedMaterials = slots;
+                    renderer.sharedMaterials = slots.ToArray();
                 }
                 PrefabUtility.SaveAsPrefabAsset(contents, prefabPath);
             }
@@ -336,6 +373,75 @@ namespace Polysmith
             {
                 PrefabUtility.UnloadPrefabContents(contents);
             }
+        }
+
+        /// <summary>
+        /// What a reduced mesh was made from, kept in its asset's import settings (userData, JSON): the original mesh
+        /// and the original material of each slot, as "guid:localId" references (empty: none).
+        /// </summary>
+        [Serializable]
+        sealed class Origin
+        {
+            public string Mesh = "";
+            public string[] Materials = new string[0];
+        }
+
+        static void RememberOrigin(Mesh reduced, Part part)
+        {
+            var origin = new Origin { Mesh = Reference(part.Mesh), Materials = new string[part.Materials.Length] };
+            for (int slot = 0; slot < part.Materials.Length; slot++)
+                origin.Materials[slot] = Reference(part.Materials[slot]);
+            var importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(reduced));
+            string json = JsonUtility.ToJson(origin);
+            if (importer.userData == json)
+                return;
+            importer.userData = json;
+            importer.SaveAndReimport();
+        }
+
+        // The original mesh and materials `shown` stands for: those it remembers when it is a reduced mesh, else itself
+        // with `showing` (its renderer's materials). A reduced mesh whose original is gone stands for itself, with a
+        // warning.
+        static (Mesh Mesh, Material[] Materials) OriginOf(Mesh shown, Material[] showing, List<string> warnings)
+        {
+            if (Array.IndexOf(AssetDatabase.GetLabels(shown), ReducedLabel) < 0)
+                return (shown, showing);
+            var importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(shown));
+            if (importer == null || string.IsNullOrEmpty(importer.userData))
+                return (shown, showing);
+            var origin = JsonUtility.FromJson<Origin>(importer.userData);
+            var mesh = Load<Mesh>(origin.Mesh);
+            if (mesh == null)
+            {
+                warnings.Add($"The original of reduced mesh '{shown.name}' is gone: the reduced mesh was sent instead.");
+                return (shown, showing);
+            }
+            var materials = new Material[origin.Materials.Length];
+            for (int slot = 0; slot < materials.Length; slot++)
+                materials[slot] = Load<Material>(origin.Materials[slot]);
+            return (mesh, materials);
+        }
+
+        static string Reference(UnityEngine.Object asset) =>
+            asset != null && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long localId)
+                ? $"{guid}:{localId.ToString(CultureInfo.InvariantCulture)}"
+                : "";
+
+        // The asset a Reference names (a mesh inside a model file is one of its sub-assets); null when it is gone.
+        static T Load<T>(string reference) where T : UnityEngine.Object
+        {
+            int colon = reference.IndexOf(':');
+            if (colon < 0)
+                return null;
+            long localId = long.Parse(reference.Substring(colon + 1), CultureInfo.InvariantCulture);
+            string path = AssetDatabase.GUIDToAssetPath(reference.Substring(0, colon));
+            if (string.IsNullOrEmpty(path))
+                return null;
+            foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(path))
+                if (asset is T typed && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string _, out long id) &&
+                    id == localId)
+                    return typed;
+            return null;
         }
 
         // Object and file names: letters, digits, '_' and '-' only.

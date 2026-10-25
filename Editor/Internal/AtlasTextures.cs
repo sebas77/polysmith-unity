@@ -77,15 +77,20 @@ namespace Polysmith
             }
         }
 
-        // True when a setting had to change. Colour and emissive are sRGB; the other kinds hold data.
+        // True when a setting had to change. Colour, emissive and billboard are sRGB; the other kinds hold data. A
+        // billboard's alpha is its silhouette, cut at 0.5 (ReducedMaterials): its mips keep the coverage at that value,
+        // so a distant card does not thin out.
         static bool Configure(TextureImporter importer, MapKind kind, int size)
         {
             var type = kind == MapKind.Normal ? TextureImporterType.NormalMap : TextureImporterType.Default;
-            bool srgb = kind == MapKind.Colour || kind == MapKind.Emissive;
+            bool srgb = kind == MapKind.Colour || kind == MapKind.Emissive || kind == MapKind.Billboard;
+            bool cutout = kind == MapKind.Billboard;
             // The default maximum (2048) would shrink a larger atlas.
             int maxSize = Mathf.Max(32, Mathf.NextPowerOfTwo(size));
             if (importer.textureType == type && importer.sRGBTexture == srgb && importer.mipmapEnabled &&
-                importer.wrapMode == TextureWrapMode.Clamp && importer.maxTextureSize == maxSize)
+                importer.wrapMode == TextureWrapMode.Clamp && importer.maxTextureSize == maxSize &&
+                importer.alphaIsTransparency == cutout && importer.mipMapsPreserveCoverage == cutout &&
+                (cutout == false || importer.alphaTestReferenceValue == ReducedMaterials.Cutoff))
                 return false;
             importer.textureType = type;
             importer.sRGBTexture = srgb;
@@ -93,6 +98,10 @@ namespace Polysmith
             // Charts are padded inside the atlas; repeating would bleed the opposite edge in.
             importer.wrapMode = TextureWrapMode.Clamp;
             importer.maxTextureSize = maxSize;
+            importer.alphaIsTransparency = cutout;
+            importer.mipMapsPreserveCoverage = cutout;
+            if (cutout)
+                importer.alphaTestReferenceValue = ReducedMaterials.Cutoff;
             return true;
         }
 

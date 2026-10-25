@@ -42,6 +42,27 @@ namespace Polysmith
         public static string Format(float value) => value.ToString("G9", CultureInfo.InvariantCulture);
 
         /// <summary>
+        /// The groups a result is read with: <paramref name="groups"/> (the mesh's submeshes), then the billboard groups
+        /// the file has ("billboard_&lt;n&gt;", Polysmith's textured planes), in file order, each one more submesh.
+        /// </summary>
+        public static List<string> GroupsOf(string path, IReadOnlyList<string> groups)
+        {
+            var all = new List<string>(groups);
+            foreach (string line in File.ReadLines(path))
+            {
+                if (line.StartsWith("usemtl " + BillboardPrefix, StringComparison.Ordinal) == false)
+                    continue;
+                string group = line.Substring("usemtl ".Length).Trim();
+                if (all.Contains(group) == false)
+                    all.Add(group);
+            }
+            return all;
+        }
+
+        // The group name Polysmith gives a part's billboard planes, followed by their number.
+        const string BillboardPrefix = "billboard_";
+
+        /// <summary>
         /// Reads an OBJ that holds one object, written with <paramref name="placement"/>, back into mesh space, with one
         /// submesh per entry of <paramref name="groups"/>; a group that is missing gives an empty submesh. Returns null,
         /// with a warning, when a group is not one of ours.
