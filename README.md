@@ -22,6 +22,9 @@ The first run asks where it is, and Unity remembers it per machine.
    away, so you can look at it and export again.
 3. Close Polysmith to finish.
 
+Several prefabs can be open at once, each in its own Polysmith; a prefab that already has one open is refused
+until that Polysmith is closed.
+
 Each reduced mesh is saved as `<prefab folder>/Reduced/<prefab>/<part>.asset` and labelled `PolysmithReduced`; the
 prefab's MeshFilters point at it. The original meshes are never changed. Running it again overwrites the same assets,
 and always starts from the originals: each reduced mesh remembers its original mesh and materials (in its import

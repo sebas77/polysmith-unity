@@ -9,9 +9,9 @@ using Debug = UnityEngine.Debug;
 namespace Polysmith
 {
     /// <summary>
-    /// Assets menu "Optimise in Polysmith": opens the selected prefab's meshes in Polysmith; while it is open, every
-    /// export is applied to the prefab (see <see cref="PolysmithWatcher"/>). The path of Polysmith.exe is asked once and
-    /// kept per machine.
+    /// Assets menu "Optimise in Polysmith": opens the selected prefab's meshes in a Polysmith of its own (several prefabs
+    /// can be open at once); while it is open, every export is applied to the prefab (see <see cref="PolysmithWatcher"/>).
+    /// The path of Polysmith.exe is asked once and kept per machine.
     /// </summary>
     static class PolysmithMenu
     {
@@ -24,13 +24,14 @@ namespace Polysmith
         [MenuItem(MenuPath)]
         static void Optimise()
         {
-            if (PolysmithWatcher.IsRunning)
+            var prefab = ((GameObject)Selection.activeObject).transform.root.gameObject;
+            // Every prefab gets its own Polysmith; one prefab has one at a time, or both would write its reduced assets.
+            if (PolysmithWatcher.IsOpen(AssetDatabase.GetAssetPath(prefab)))
             {
                 EditorUtility.DisplayDialog("Optimise in Polysmith",
-                    "Polysmith is already open for a prefab. Close it to finish that round trip first.", "OK");
+                    $"Polysmith is already open for '{prefab.name}'. Close it to finish that round trip first.", "OK");
                 return;
             }
-            var prefab = ((GameObject)Selection.activeObject).transform.root.gameObject;
             string exe = FindExe();
             if (exe == null)
                 return;

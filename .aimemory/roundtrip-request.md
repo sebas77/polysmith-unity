@@ -16,3 +16,14 @@
 - Verified on lodtest's `Assets/Original (1818874 tris) (1).prefab`: request bounds became prefab/world bounds
   (y 0..0.979), the Polysmith screenshot is upright and textured and matches loading the FBX; compile 0
   errors, 0 warnings.
+
+## Several round trips at once (Seb, 2026-10-26)
+
+Seb: optimising another prefab while one Polysmith is open must not be refused,
+"it's ok to open a new instance of polysmith". PolysmithWatcher keeps a LIST of
+round trips (SessionState "Polysmith.RoundTrips", JSON: prefab, temp folder,
+process id + start ticks, last applied stamp); Poll applies / finishes each.
+Only the SAME prefab is refused while its round trip is open (both would write
+its reduced assets). A round trip open under the old single-trip keys
+("Polysmith.RoundTrip.*") when this code loads is not migrated: its Polysmith
+keeps running but is no longer applied. Compiles against 6000.6.2f1; NOT run.
