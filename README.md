@@ -61,6 +61,38 @@ are deduplicated; already-open prefabs and partial launch errors are reported.
 The base plugin does not require Unity MCP. See Polysmith's `tools/README.md` for its
 stdio server setup, tool workflow and verification commands.
 
+## Independent LOD sets
+
+Polysmith's explicitly confirmed `polysmith_export_levels` operation writes
+`LOD0.fbx` through `LOD3.fbx` (two to four levels) and `manifest.json`. Each level
+has its own compact indexed mesh; there is no shared-vertex-buffer requirement.
+This is separate from the existing single-LOD OBJ prefab round trip above.
+
+1. Copy the exported set into a folder under `Assets/` and let Unity import it.
+2. Select `manifest.json`, then **Assets → Polysmith → Create LOD prefab**.
+3. For **original-UV** exports, also select the original Unity prefab/model:
+   its materials are reused by name across levels. Missing or ambiguous material
+   names are rejected, never guessed. Atlas-mode levels retain their own imported
+   baked materials, since their UV layouts need not match.
+
+The menu creates a new prefab; it never replaces the source. Editor scripts can
+call `PolysmithLodSet.Build(manifestPath, prefabPath, sourceMaterials, overwrite)`;
+paths must be Assets-relative, and replacing an existing output requires explicit
+`overwrite: true`. The manifest supplies transition heights (defaults 0.5, 0.2,
+0.05, 0.01 for the available levels).
+
+Static and skeletally animated meshes are supported. LOD0 keeps the imported
+hierarchy and animation clips; lower-level renderers attach to the matching LOD0
+nodes and bind to its bones, rather than duplicating the rig. Assign/play the
+imported animation on LOD0's Animator as with the individual FBX. Animated blend
+shapes are currently rejected by this importer rather than left unsynchronized.
+Generate/readable mesh settings and animation import settings remain ordinary
+Unity model import settings.
+
+Integration tests use synthetic outputs from `PolysmithLodSetSmoke.py`; set
+`POLYSMITH_LOD_SET_TEST_DIR` to its output directory when running
+`PolysmithLodSetTests` in the `Polysmith.Editor.Tests` EditMode assembly.
+
 ## Limits
 
 - Prefab assets only, not model files (FBX, OBJ) and not objects in a scene.
