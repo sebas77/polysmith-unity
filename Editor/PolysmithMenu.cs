@@ -36,6 +36,25 @@ namespace Polysmith
             if (exe == null)
                 return;
 
+            try
+            {
+                OpenPrefab(prefab, exe, false);
+            }
+            catch (Exception error)
+            {
+                EditorUtility.DisplayDialog("Optimise in Polysmith", error.Message, "OK");
+            }
+        }
+
+        // Shared launch path for the menu and the prefab-only automation API.
+        // Automation never opens a picker or applies a result; the watcher only
+        // receives files when an explicit export is requested in Polysmith.
+        internal static int OpenPrefab(GameObject prefab, string exe, bool automation)
+        {
+            string prefabPath = AssetDatabase.GetAssetPath(prefab);
+            if (PolysmithWatcher.IsOpen(prefabPath))
+                throw new InvalidOperationException($"Polysmith is already open for '{prefabPath}'.");
+
             string folder = Path.Combine(Path.GetTempPath(), "polysmith_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(folder);
             var warnings = new List<string>();
@@ -44,23 +63,40 @@ namespace Polysmith
             {
                 request = PolysmithRoundTrip.WriteRequest(prefab, folder, warnings);
             }
-            catch (InvalidOperationException nothingToSend)
+            catch
             {
                 Directory.Delete(folder, true);
-                EditorUtility.DisplayDialog("Optimise in Polysmith", nothingToSend.Message, "OK");
-                return;
+                throw;
             }
             foreach (string warning in warnings)
                 Debug.LogWarning("Polysmith: " + warning);
             // --unity-roundtrip shows Polysmith's "Replace prefab mesh" button, which writes every part's result file.
-            using (var process = Process.Start(new ProcessStartInfo(exe, $"\"{request}\" --unity-roundtrip")
+            try
+            {
+                using (var process = Process.Start(new ProcessStartInfo(exe,
+                           $"\"{request}\" --unity-roundtrip" + (automation ? " --automation" : ""))
                    {
                        UseShellExecute = false,
-                       WorkingDirectory = WorkingFolder(exe)
+                       WorkingDirectory = automation ? folder : WorkingFolder(exe)
                    }))
-                PolysmithWatcher.Start(AssetDatabase.GetAssetPath(prefab), folder, process);
-            Debug.Log($"Polysmith: opened '{prefab.name}'. Each export updates the prefab; close Polysmith to finish.");
+                {
+                    if (process == null)
+                        throw new InvalidOperationException("Polysmith did not start.");
+                    PolysmithWatcher.Start(prefabPath, folder, process);
+                    Debug.Log($"Polysmith: opened '{prefab.name}'. Each export updates the prefab; close Polysmith to finish.");
+                    return process.Id;
+                }
+            }
+            catch
+            {
+                // Do not delete a folder owned by a successfully registered process.
+                if (PolysmithWatcher.IsOpen(prefabPath) == false)
+                    Directory.Delete(folder, true);
+                throw;
+            }
         }
+
+        internal static string ConfiguredExe => EditorPrefs.GetString(ExePathKey, "");
 
         // Null when the user closes the file panel.
         static string FindExe()

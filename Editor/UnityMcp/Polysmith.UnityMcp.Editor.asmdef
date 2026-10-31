@@ -1,0 +1,14 @@
+{
+  "name": "Polysmith.UnityMcp.Editor",
+  "rootNamespace": "Polysmith",
+  "references": ["Polysmith.Editor", "MCPForUnity.Editor"],
+  "includePlatforms": ["Editor"],
+  "overrideReferences": true,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "autoReferenced": true,
+  "defineConstraints": ["POLYSMITH_UNITY_MCP"],
+  "versionDefines": [
+    {"name": "com.coplaydev.unity-mcp", "expression": "10.0.0", "define": "POLYSMITH_UNITY_MCP"}
+  ],
+  "noEngineReferences": false
+}

@@ -42,6 +42,25 @@ the part's first material with the billboard image (`<part>_lod_billboard<n>.png
 and every other map cleared; the image's mips keep their coverage at that value. A later export without billboards
 removes those slots again.
 
+## AI / Unity MCP
+
+With `com.coplaydev.unity-mcp` 10+ installed, the optional `Polysmith.UnityMcp.Editor`
+assembly registers the custom tool `polysmith_prefabs`:
+
+- `action: "find", filter: "Tree"` lists matching editable prefab assets.
+- `action: "open", prefab_paths: ["Assets/Trees/Oak.prefab", ...]` selects and opens
+  those exact prefabs, one automation-enabled Polysmith per prefab. `executable`
+  can name an absolute Polysmith build; otherwise the menu's saved path is used.
+- The returned process ids identify their sessions in Polysmith MCP. Opening never
+  exports or replaces prefab meshes. The agent leaves its optimized result visible
+  for feedback; export/apply happens **only on request** through Polysmith MCP.
+
+The public `PolysmithAutomation` API backs the tool and reuses the normal round trip.
+Scene objects, FBX/model prefabs and package assets are rejected. Duplicate paths
+are deduplicated; already-open prefabs and partial launch errors are reported.
+The base plugin does not require Unity MCP. See Polysmith's `tools/README.md` for its
+stdio server setup, tool workflow and verification commands.
+
 ## Limits
 
 - Prefab assets only, not model files (FBX, OBJ) and not objects in a scene.
