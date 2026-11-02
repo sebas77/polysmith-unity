@@ -2,16 +2,18 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
 namespace Polysmith
 {
     /// <summary>
-    /// Imports Polysmith's independent FBXs into a conventional LODGroup.
-    /// LOD0 retains the source hierarchy/animation. Other levels place only
-    /// their renderers below the corresponding LOD0 nodes and reuse its bones.
-    /// No runtime script, shared vertex buffer, or source-prefab mutation.
+    /// Imports Polysmith's independent levels into a prefab. One level is a
+    /// plain animated model (a Polysmith GLB or FBX export); two to four become
+    /// a conventional LODGroup. LOD0 retains the source hierarchy/animation,
+    /// other levels place only their renderers below the corresponding LOD0
+    /// nodes and reuse its bones. No runtime script or source-prefab mutation.
     /// </summary>
     public static class PolysmithLodSet
     {
@@ -52,7 +54,7 @@ namespace Polysmith
                 var nodes = NodeMap(first.transform);
                 var lods = new LOD[models.Length];
                 var baseRenderers = first.GetComponentsInChildren<Renderer>(true);
-                ValidateRenderers(baseRenderers, manifest.levels[0].triangles);
+                ValidateRenderers(baseRenderers, manifest.levels[0].triangles, manifest.levels[0].file);
                 foreach (var renderer in baseRenderers)
                     AssignMaterials(renderer, materials);
                 lods[0] = new LOD(manifest.levels[0].screenHeight, baseRenderers);
@@ -60,7 +62,7 @@ namespace Polysmith
                 for (int level = 1; level < models.Length; level++)
                 {
                     var imported = models[level].GetComponentsInChildren<Renderer>(true);
-                    ValidateRenderers(imported, manifest.levels[level].triangles);
+                    ValidateRenderers(imported, manifest.levels[level].triangles, manifest.levels[level].file);
                     var renderers = new Renderer[imported.Length];
                     for (int r = 0; r < imported.Length; r++)
                     {
@@ -95,9 +97,18 @@ namespace Polysmith
                     lods[level] = new LOD(manifest.levels[level].screenHeight, renderers);
                 }
 
-                var group = root.AddComponent<LODGroup>();
-                group.SetLODs(lods);
-                group.RecalculateBounds();
+                if (models.Length > 1)
+                {
+                    var group = root.AddComponent<LODGroup>();
+                    group.SetLODs(lods);
+                    group.RecalculateBounds();
+                }
+                else
+                {
+                    // One level: a plain model. Its own clips drive it through an
+                    // Animator, which a glTF import leaves without a controller.
+                    EnsureAnimation(first, folder + "/" + manifest.levels[0].file, prefabPath);
+                }
                 var prefab = PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool saved);
                 if (saved == false || prefab == null)
                     throw new IOException("Could not save LOD prefab: " + prefabPath);
@@ -120,19 +131,21 @@ namespace Polysmith
         static void ValidateManifest(Manifest manifest)
         {
             if (manifest == null || manifest.version != 1 || manifest.format != "polysmith-lod-set" ||
-                manifest.levels == null || manifest.levels.Length < 2 || manifest.levels.Length > 4)
-                throw new InvalidDataException("Expected a Polysmith independent LOD-set manifest with two to four levels.");
+                manifest.levels == null || manifest.levels.Length < 1 || manifest.levels.Length > 4)
+                throw new InvalidDataException("Expected a Polysmith independent LOD-set manifest with one to four levels.");
             var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             float previousHeight = 1;
             double previousFit = 0;
             foreach (var level in manifest.levels)
             {
+                string extension = level == null || string.IsNullOrEmpty(level.file) ? null : Path.GetExtension(level.file);
                 if (level == null || string.IsNullOrEmpty(level.file) || Path.GetFileName(level.file) != level.file ||
                     level.file.Contains("/") || level.file.Contains("\\") ||
-                    string.Equals(Path.GetExtension(level.file), ".fbx", StringComparison.OrdinalIgnoreCase) == false ||
+                    (string.Equals(extension, ".fbx", StringComparison.OrdinalIgnoreCase) == false &&
+                     string.Equals(extension, ".glb", StringComparison.OrdinalIgnoreCase) == false) ||
                     files.Add(level.file) == false || level.screenHeight <= 0 || level.screenHeight >= previousHeight ||
                     float.IsNaN(level.screenHeight) || double.IsNaN(level.fitPercent) || double.IsInfinity(level.fitPercent) ||
-                    level.fitPercent <= previousFit || level.fitPercent > 100 || level.vertices <= 0 || level.triangles <= 0)
+                    level.fitPercent < 0 || level.fitPercent > 100 || level.vertices < 0 || level.triangles < 0)
                     throw new InvalidDataException("Invalid LOD filename, order, screen height or mesh counts.");
                 previousHeight = level.screenHeight;
                 previousFit = level.fitPercent;
@@ -190,7 +203,7 @@ namespace Polysmith
             return mapped;
         }
 
-        static void ValidateRenderers(Renderer[] renderers, int expectedTriangles)
+        static void ValidateRenderers(Renderer[] renderers, int expectedTriangles, string file)
         {
             long triangles = 0;
             foreach (var renderer in renderers)
@@ -203,16 +216,64 @@ namespace Polysmith
                 else
                     throw new NotSupportedException("LOD models must contain mesh renderers only.");
                 if (mesh == null || renderer.sharedMaterials.Length != mesh.subMeshCount)
-                    throw new InvalidDataException("Missing mesh or mismatched material slots.");
+                    throw new InvalidDataException("Missing mesh or mismatched material slots in " + file);
                 for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
                 {
                     if (mesh.GetTopology(submesh) != MeshTopology.Triangles)
-                        throw new InvalidDataException("LOD submeshes must use triangle topology.");
+                        throw new InvalidDataException("LOD submeshes must use triangle topology in " + file);
                     triangles += mesh.GetIndexCount(submesh) / 3;
                 }
             }
-            if (renderers.Length == 0 || triangles != expectedTriangles)
-                throw new InvalidDataException("Imported triangle count does not match the LOD manifest.");
+            // A manifest written without counts (0) states no expectation.
+            if (renderers.Length == 0 || (expectedTriangles > 0 && triangles != expectedTriangles))
+                throw new InvalidDataException("Imported triangle count does not match the LOD manifest for " + file);
+        }
+
+        /// <summary>
+        /// Gives a single exported level its own animation: a saved controller
+        /// with one state per clip of the model and an Animator that plays it.
+        /// glTFast imports clips but no controller, so a GLB would otherwise
+        /// rest in its bind pose.
+        /// </summary>
+        static void EnsureAnimation(GameObject lod0, string modelPath, string prefabPath)
+        {
+            var animator = lod0.GetComponent<Animator>();
+            if (animator == null)
+                animator = lod0.GetComponentInChildren<Animator>(true);
+            if (animator == null)
+                animator = lod0.AddComponent<Animator>();
+            if (animator.runtimeAnimatorController != null)
+                return;
+
+            var clips = new List<AnimationClip>();
+            foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(modelPath))
+                if (asset is AnimationClip clip && clip.legacy == false)
+                    clips.Add(clip);
+            if (clips.Count == 0)
+                return;
+
+            string folder = Path.GetDirectoryName(prefabPath).Replace('\\', '/');
+            string path = folder + "/" + Path.GetFileNameWithoutExtension(prefabPath) + ".controller";
+            var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
+            if (controller == null)
+                controller = AnimatorController.CreateAnimatorControllerAtPath(path);
+
+            var machine = controller.layers[0].stateMachine;
+            foreach (var clip in clips)
+            {
+                bool present = false;
+                foreach (var state in machine.states)
+                    if (state.state.motion == clip)
+                        present = true;
+                if (present)
+                    continue;
+                var added = machine.AddState(clip.name);
+                added.motion = clip;
+                if (machine.defaultState == null)
+                    machine.defaultState = added;
+            }
+            animator.runtimeAnimatorController = controller;
+            animator.applyRootMotion = false;
         }
 
         [MenuItem("Assets/Polysmith/Create LOD prefab")]
