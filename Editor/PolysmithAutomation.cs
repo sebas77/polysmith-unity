@@ -7,7 +7,7 @@ using UnityEngine;
 namespace Polysmith
 {
     /// <summary>
-    /// Prefab-asset-only handoff for Unity MCP. Discovery is separate from launch:
+    /// Prefab-asset-only handoff for Unity CLI. Discovery is separate from launch:
     /// callers inspect exact paths before opening them. Never exports or applies meshes.
     /// Uses Polysmith.Editor's existing round-trip ownership and watcher.
     /// </summary>

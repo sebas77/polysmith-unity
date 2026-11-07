@@ -12,9 +12,11 @@
   explicitly confirmed Unity export writes the existing `_lod.obj` outputs;
   the watcher then applies them as before. Scene objects/model/package prefabs
   are out of scope by user decision.
-- Optional `Polysmith.UnityMcp.Editor` assembly registers `polysmith_prefabs`
-  with Coplay Unity MCP 10+ (`find`, `open`). Base `Polysmith.Editor` has no MCP
-  dependency. Unity generated the added .meta files during import.
+- Unity CLI is the prefab discovery/launch path (user decision 2026-11-07).
+  Evaluate the existing public API with `unity command eval --file <outside-Assets
+  script> --project-path <exact project> --format json`. The optional
+  `Polysmith.UnityMcp.Editor` adapter and its metadata were removed through Unity
+  AssetDatabase; no Unity MCP dependency or replacement adapter is needed.
 - Evidence: local package compiled in lodtest (Unity CLI recompile: 0 errors,
   0 warnings). API discovery/invalid-path checks passed. Two temporary prefab
   assets opened in separate app processes; repeated path was deduplicated and
@@ -24,6 +26,20 @@
 - Coplay custom-tool registration not tested (that package is not installed in
   the connected test Editor). NUnit test assembly authored but not enabled by
   package testables; API checks ran through Unity CLI eval_file instead.
+
+## CLI-only handoff verification (2026-11-07)
+
+- README now documents CLI discovery and exact-path launch using the unchanged
+  `PolysmithAutomation` API; round-trip and watcher behavior are unchanged.
+- In lodtest, `unity command eval --file` returned 9 sorted editable prefabs;
+  API assertions rejected 5 invalid paths and an empty launch without changing
+  Selection, and confirmed adapter/metadata removal. No prefab was launched or
+  mesh replaced. This was a direct API check, not an NUnit runner execution.
+- `script.recompile` and `script.recompile_status` returned `up_to_date`,
+  `failed:false`, `errors:[]`, `compilationFailed:false`; current console ground
+  truth had 0 errors/warnings. Historical unrelated errors remain in the buffer.
+- CLI 1.0.0-beta.13 top-level `unity recompile` returned HTTP 400; the discovered
+  `unity command script.recompile` succeeded instead.
 
 ## Independent LOD-set import (2026-10-31)
 

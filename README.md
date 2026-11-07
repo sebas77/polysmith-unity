@@ -42,23 +42,42 @@ the part's first material with the billboard image (`<part>_lod_billboard<n>.png
 and every other map cleared; the image's mips keep their coverage at that value. A later export without billboards
 removes those slots again.
 
-## AI / Unity MCP
+## AI / Unity CLI
 
-With `com.coplaydev.unity-mcp` 10+ installed, the optional `Polysmith.UnityMcp.Editor`
-assembly registers the custom tool `polysmith_prefabs`:
+Use Unity CLI with the running Editor's Unity Pipeline bridge. No Unity MCP
+package or custom adapter is required. Run `unity status --format json`, then
+`unity list --project-path "C:\absolute\UnityProject" --format json` to discover
+commands. Always target that exact project.
 
-- `action: "find", filter: "Tree"` lists matching editable prefab assets.
-- `action: "open", prefab_paths: ["Assets/Trees/Oak.prefab", ...]` selects and opens
-  those exact prefabs, one automation-enabled Polysmith per prefab. `executable`
-  can name an absolute Polysmith build; otherwise the menu's saved path is used.
+Save a C# snippet outside `Assets/` and evaluate it through the discovered command:
+
+```powershell
+unity command eval --project-path "C:\absolute\UnityProject" --format json --file "C:\absolute\handoff.cs"
+```
+
+Read-only discovery:
+
+```csharp
+return Polysmith.PolysmithAutomation.FindPrefabs("Tree");
+```
+
+After inspecting the returned paths, launch the exact prefabs:
+
+```csharp
+return Polysmith.PolysmithAutomation.OpenPrefabs(
+    new[] { "Assets/Trees/Oak.prefab" }, @"C:\absolute\Polysmith.exe");
+```
+
+- `OpenPrefabs` selects and opens those exact prefabs, one automation-enabled
+  Polysmith per prefab. Omit the executable to use the menu's saved path.
 - The returned process ids identify their sessions in Polysmith MCP. Opening never
   exports or replaces prefab meshes. The agent leaves its optimized result visible
   for feedback; export/apply happens **only on request** through Polysmith MCP.
 
-The public `PolysmithAutomation` API backs the tool and reuses the normal round trip.
+The public `PolysmithAutomation` API reuses the normal round trip.
 Scene objects, FBX/model prefabs and package assets are rejected. Duplicate paths
 are deduplicated; already-open prefabs and partial launch errors are reported.
-The base plugin does not require Unity MCP. See Polysmith's `tools/README.md` for its
+See Polysmith's `tools/README.md` for its
 stdio server setup, tool workflow and verification commands.
 
 ## Independent LOD sets
