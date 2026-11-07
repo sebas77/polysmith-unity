@@ -1,4 +1,26 @@
-# Unity round trip request (OBJ + MTL)
+# Unity round trip request (GLB, 2026-11-07)
+
+- Current workflow is GLB only, using optional UnityGLTF >=2.24.0. The independent
+  `Polysmith.Setup.Editor` assembly offers an explicitly confirmed OpenUPM install;
+  the main Editor assembly has a Version Define/constraint and does not compile
+  without UnityGLTF. No unresolved hard dependency prevents the installer loading.
+- Requests export the original meshes/materials and sampled skeletal clips from a
+  temporary instance. Returns save mesh/material assets only; existing rig,
+  Animator, Avatar, controller and original clips remain. Bone weights are remapped
+  by transform path, with the original mesh's bind poses, not surface projection.
+- The OBJ/MTL reader/writer, tangent OBJ importer and nearest-surface skin transfer
+  are removed. Returned GLB atlas maps persist as images; materials use UnityGLTF's
+  shader. A fully hidden object receives an empty mesh, preserving its rig node.
+- Verification: six round-trip tests and three registry tests passed in lodtest;
+  package removal compiled with integration disabled, and the installer restored
+  2.24.0 with integration enabled. A scratch dragon return applied 15 mesh assets,
+  2610 triangles/3243 vertices, while controller/Avatar/clips/bones and source prefab
+  bytes stayed unchanged. Shader observed: `UnityGLTF/PBRGraph`.
+- The final original-UV material-reuse addition has an authored test but was not
+  observed in the executed test list before the user stopped further testing.
+- Limits: Polysmith drops blend shapes; a Humanoid fixture was not exercised.
+
+## Historical OBJ implementation (superseded)
 
 ## Fixed 2026-10-24: request model was rotated and untextured
 

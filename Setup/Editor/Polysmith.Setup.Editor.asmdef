@@ -1,0 +1,9 @@
+{
+  "name": "Polysmith.Setup.Editor",
+  "includePlatforms": ["Editor"],
+  "overrideReferences": true,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "versionDefines": [
+    {"name": "org.khronos.unitygltf", "expression": "2.24.0", "define": "POLYSMITH_UNITY_GLTF"}
+  ]
+}

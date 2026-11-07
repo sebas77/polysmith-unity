@@ -11,8 +11,8 @@ using Debug = UnityEngine.Debug;
 namespace Polysmith
 {
     /// <summary>
-    /// Follows the running Polysmith round trips, one Polysmith per prefab: each time a Polysmith writes its "_lod.obj"
-    /// files, they are applied to its prefab (<see cref="PolysmithRoundTrip.ApplyResults"/>); when it closes, its round
+    /// Follows the running Polysmith round trips, one Polysmith per prefab: each time a Polysmith writes its "_lod.glb"
+    /// file, it is applied to its prefab (<see cref="PolysmithRoundTrip.ApplyResults"/>); when it closes, its round
     /// trip ends and its temp folder is deleted. The round trips live in SessionState, so they survive a script reload.
     /// </summary>
     [InitializeOnLoad]
@@ -125,7 +125,7 @@ namespace Polysmith
         {
             var files = new List<string>();
             foreach (string file in Directory.GetFiles(folder))
-                if (file.EndsWith("_lod.obj", StringComparison.OrdinalIgnoreCase))
+                if (file.EndsWith("_lod.glb", StringComparison.OrdinalIgnoreCase))
                     files.Add(Path.GetFileName(file) + "@" + Ticks(File.GetLastWriteTimeUtc(file)));
             files.Sort(StringComparer.Ordinal);
             var stamp = new StringBuilder();

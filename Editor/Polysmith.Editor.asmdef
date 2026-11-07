@@ -1,7 +1,7 @@
 {
   "name": "Polysmith.Editor",
   "rootNamespace": "Polysmith",
-  "references": [],
+  "references": ["UnityGLTFScripts", "UnityGLTFEditor", "GLTFSerialization"],
   "includePlatforms": [
     "Editor"
   ],
@@ -10,7 +10,9 @@
   "overrideReferences": false,
   "precompiledReferences": [],
   "autoReferenced": true,
-  "defineConstraints": [],
-  "versionDefines": [],
+  "defineConstraints": ["POLYSMITH_UNITY_GLTF"],
+  "versionDefines": [
+    {"name": "org.khronos.unitygltf", "expression": "2.24.0", "define": "POLYSMITH_UNITY_GLTF"}
+  ],
   "noEngineReferences": false
 }

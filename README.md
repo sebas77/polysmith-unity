@@ -13,34 +13,48 @@ https://github.com/sebas77/polysmith-unity.git
 You also need `Polysmith.exe`, a build that accepts `--unity-roundtrip` (it adds the "Replace prefab mesh" button).
 The first run asks where it is, and Unity remembers it per machine.
 
+On installation, Polysmith offers to install **UnityGLTF 2.24.0**. Accepting adds the
+OpenUPM scoped registry (`https://package.openupm.com`, scope `org.khronos.unitygltf`)
+to this project and installs the package. Existing registries and dependencies are preserved;
+conflicting registry scopes are reported, not overwritten. Declining leaves the optimisation
+assembly disabled. Retry from **Tools → Polysmith → Install GLB support**.
+UnityGLTF is deliberately not a hard manifest dependency: the independent setup assembly
+must compile before the project has registered OpenUPM. An asmdef Version Define enables
+the GLB assembly only when UnityGLTF 2.24.0 or newer is installed.
+
 ## Use
 
 1. In the Project window, right-click a prefab → **Optimise in Polysmith**. Its meshes open in Polysmith, placed as the
    prefab shows them.
-2. Reduce them, then press **Replace prefab mesh**, which writes every part. **Export OBJ…** also works for one part
-   at a time; keep the suggested `<part>_lod.obj` name and folder. Every export updates the prefab in Unity straight
-   away, so you can look at it and export again.
+2. Reduce them, then press **Replace prefab mesh**, which writes `<prefab>_lod.glb` next to the request.
+   Every export updates the prefab in Unity straight away, so you can look at it and export again.
 3. Close Polysmith to finish.
 
 Several prefabs can be open at once, each in its own Polysmith; a prefab that already has one open is refused
 until that Polysmith is closed.
 
 Each reduced mesh is saved as `<prefab folder>/Reduced/<prefab>/<part>.asset` and labelled `PolysmithReduced`; the
-prefab's MeshFilters point at it. The original meshes are never changed. Running it again overwrites the same assets,
-and always starts from the originals: each reduced mesh remembers its original mesh and materials (in its import
-settings), and a prefab that already shows reduced meshes sends those originals to Polysmith.
+prefab's MeshFilters and SkinnedMeshRenderers point at it. The original meshes are never changed. Running it again
+overwrites the same assets, and always starts from the originals: each reduced mesh remembers its original mesh and
+materials (in its import settings), and a prefab that already shows reduced meshes sends those originals to Polysmith.
 
-Material groups follow the prefab's materials, so Polysmith bakes one atlas per material. When an export carries atlas
-maps (colour, normal, occlusion, metal-rough, emissive), each is saved as a PNG in `Reduced/<prefab>/` (occlusion and
-metal-rough repacked to Unity's channels) and imported with the settings its kind needs; Unity builds its mips. Each
-material gets a reduced copy (`Reduced/<prefab>/<material>.mat`) using them. Normal-mapped parts are read through
-Unity's OBJ importer so their tangents are MikkTSpace, matching Polysmith's bake.
+Requests are **GLB only**, with or without animation. UnityGLTF exports the original meshes,
+skin weights, skeleton and sampled animation clips from a temporary copy. Humanoid clips are
+baked to bone-transform tracks for Polysmith's preview, not baked into deformed vertices.
+Returned meshes retain Polysmith's skin weights, remapped by transform path to the prefab's
+existing bones, with the original bind poses. **Only meshes and materials are replaced**;
+the hierarchy, Animator, Avatar, controller and original clips are untouched.
+The old OBJ/MTL parser, writer and nearest-surface skin transfer are removed.
 
-Billboards built in Polysmith come back inside their part: each `billboard_<n>` group becomes one more submesh after
-the mesh's own, with one more material slot. Its material (`Reduced/<prefab>/<part>_billboard_<n>.mat`) is a copy of
-the part's first material with the billboard image (`<part>_lod_billboard<n>.png`) as its colour, cut out at alpha 0.5
-and every other map cleared; the image's mips keep their coverage at that value. A later export without billboards
-removes those slots again.
+When Polysmith merged materials, a part's result names the merged material (after the first one merged, possibly
+another part's): the part then has one submesh per material it uses, and every part merged into one material shares one
+reduced material.
+
+Embedded atlas maps are saved as PNGs in `Reduced/<prefab>/`, with UnityGLTF materials
+saved beside the meshes. They use glTF's channel packing (including RGB normals), not
+Unity Standard's metal/smoothness packing. Unity builds their mips and calculates tangents.
+Billboard primitives/materials are imported from the same GLB; no sidecar OBJ or MTL is used.
+Original-UV results without baked maps reuse the remembered source materials by slot name.
 
 ## AI / Unity CLI
 
@@ -85,7 +99,7 @@ stdio server setup, tool workflow and verification commands.
 Polysmith's explicitly confirmed `polysmith_export_levels` operation writes
 `LOD0.fbx` through `LOD3.fbx` (two to four levels) and `manifest.json`. Each level
 has its own compact indexed mesh; there is no shared-vertex-buffer requirement.
-This is separate from the existing single-LOD OBJ prefab round trip above.
+This is separate from the single-LOD GLB prefab round trip above.
 
 1. Copy the exported set into a folder under `Assets/` and let Unity import it.
 2. Select `manifest.json`, then **Assets → Polysmith → Create LOD prefab**.
@@ -117,7 +131,8 @@ Integration tests use synthetic outputs from `PolysmithLodSetSmoke.py`; set
 - Prefab assets only, not model files (FBX, OBJ) and not objects in a scene.
 - Meshes come back with positions, normals, the first UV set (the atlas UVs when there are maps), tangents when
   there is a normal map, and their submeshes. Vertex colours, other UV sets and blend shapes are not kept.
-- Material properties follow the URP Lit and Built-in Standard shaders.
-- Billboard cards are drawn from both sides with URP Lit, from the front only with Built-in Standard (it has no
-  two-sided setting). With another shader they are not cut out (a warning says so).
+- Returned materials use UnityGLTF's shaders. Custom shader properties outside glTF are not transferred.
+- Polysmith's GLB writer currently omits blend shapes and original-UV source textures.
+- Ambiguous/missing transform paths and bones outside the original renderer are rejected.
+- A fully hidden object keeps its renderer/bones but receives an empty mesh, so its original geometry does not reappear.
 - Don't edit the prefab while Polysmith is open: each export saves it.

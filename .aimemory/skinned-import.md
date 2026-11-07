@@ -10,4 +10,5 @@
   unknown, in which case the import does not compare counts.
 - Two to four levels behave as before (LODGroup, LOD0 verbatim, lower levels
   bound to LOD0 bones).
-- The static OBJ round trip is unchanged and still cannot carry skin.
+- The prefab round trip is now GLB-based and separate from this LOD-set importer;
+  see `roundtrip-request.md` for its skin/animation preservation and verification.

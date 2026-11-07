@@ -1,8 +1,11 @@
 {
   "name": "Polysmith.Editor.Tests",
-  "references": ["Polysmith.Editor"],
+  "references": ["Polysmith.Editor", "UnityGLTFScripts", "GLTFSerialization"],
   "includePlatforms": ["Editor"],
   "optionalUnityReferences": ["TestAssemblies"],
   "autoReferenced": false,
-  "defineConstraints": ["UNITY_INCLUDE_TESTS"]
+  "defineConstraints": ["UNITY_INCLUDE_TESTS", "POLYSMITH_UNITY_GLTF"],
+  "versionDefines": [
+    {"name": "org.khronos.unitygltf", "expression": "2.24.0", "define": "POLYSMITH_UNITY_GLTF"}
+  ]
 }

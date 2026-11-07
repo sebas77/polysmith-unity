@@ -1,3 +1,4 @@
+#if POLYSMITH_UNITY_GLTF
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -5,452 +6,352 @@ using System.IO;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
+using UnityGLTF;
+using Object = UnityEngine.Object;
 
 namespace Polysmith
 {
     /// <summary>
-    /// Sends a prefab's meshes to Polysmith and takes back the reduced ones as new mesh assets. Generic: any prefab.
-    /// <list type="number">
-    /// <item><see cref="WriteRequest"/> writes every distinct MeshFilter mesh into one OBJ, one object per mesh and
-    /// one material group per submesh, placed as the prefab shows it.</item>
-    /// <item>Polysmith exports each object it reduced as "&lt;object&gt;_lod.obj" next to that OBJ.</item>
-    /// <item><see cref="ApplyResults"/> saves each as "&lt;prefab folder&gt;/Reduced/&lt;prefab&gt;/&lt;object&gt;.asset",
-    /// labelled <see cref="ReducedLabel"/>, and points every MeshFilter of the prefab that used the mesh at it. Meshes
-    /// without a result stay as they are; original mesh assets are never changed. Polysmith's billboards come back as
-    /// extra submeshes ("billboard_&lt;n&gt;" groups) with cut-out materials of their own, one more material slot each.</item>
-    /// </list>
-    /// A round trip always starts from the ORIGINAL meshes and materials (Seb, 2026-10-25): every reduced mesh
-    /// remembers them (<see cref="Origin"/>), and a prefab that already shows reduced meshes sends their originals.
-    /// Precondition: the prefab's meshes and transforms do not change between the two calls, since objects are
-    /// matched by name and moved back into mesh space by the same placement.
+    /// GLB-only prefab round trip. Export original meshes/materials and sampled animation from a temporary copy.
+    /// Return only mesh/material assets: never replace the prefab's rig, Animator, Avatar, controller or clips.
     /// </summary>
     public static class PolysmithRoundTrip
     {
-        /// <summary>
-        /// Asset label of every mesh this tool wrote. A tool that regenerates meshes can check it to keep a reduction.
-        /// </summary>
         public const string ReducedLabel = "PolysmithReduced";
 
-        // Image files a material's texture can be handed to Polysmith as: what raylib or Windows WIC decodes.
-        static readonly string[] ImageExtensions =
-        {
-            ".png", ".jpg", ".tga", ".bmp", ".psd", ".gif", ".hdr", ".pic", ".pnm", ".ppm", ".pgm", ".qoi", ".tif",
-            ".tiff"
-        };
-
-        /// <summary>
-        /// Writes the request OBJ into <paramref name="folder"/> and returns its path. Throws when the prefab has no
-        /// mesh to send (Polysmith cannot open an empty file), e.g. when its meshes are built at run time.
-        /// </summary>
         public static string WriteRequest(GameObject prefab, string folder, List<string> warnings)
         {
-            var colours = new Dictionary<string, Color>();
-            var objects = Objects(prefab, warnings, colours);
-            if (objects.Count == 0)
-                throw new InvalidOperationException($"'{prefab.name}' has no triangle mesh assets on its MeshFilters, " +
-                                                    "so there is nothing to send to Polysmith.");
-            string stem = Sanitize(prefab.name);
-            // Polysmith knows material groups only from an MTL; without one every face loads as one material.
-            var writer = new ObjWriter(stem + ".mtl");
-            foreach (var part in objects)
-                writer.Append(part.Name, part.Mesh, part.Placement, part.Groups);
-            var maps = new Dictionary<string, (string Colour, string Normal)>();
-            foreach (var part in objects)
-                for (int submesh = 0; submesh < part.Groups.Length; submesh++)
-                {
-                    var material = submesh < part.Materials.Length ? part.Materials[submesh] : null;
-                    if (material != null && maps.ContainsKey(part.Groups[submesh]) == false)
-                        maps[part.Groups[submesh]] = Maps(part.Groups[submesh], material, folder, warnings);
-                }
-            File.WriteAllText(Path.Combine(folder, stem + ".mtl"), ObjMeshFile.Mtl(colours, maps));
-            string path = Path.Combine(folder, stem + ".obj");
-            File.WriteAllText(path, writer.ToString());
-            return path;
-        }
-
-        // The maps Polysmith shows and bakes: the material's colour map (map_Kd) and normal map (norm). Its loader
-        // reads no other kinds. The files are copied beside the OBJ so the MTL never depends on project paths.
-        static (string Colour, string Normal) Maps(string group, Material material, string folder, List<string> warnings)
-        {
-            return (CopyMap(material, "_BaseMap", "_MainTex", group + "_base", folder, warnings),
-                    CopyMap(material, "_BumpMap", null, group + "_normal", folder, warnings));
-        }
-
-        // The image file of a texture property, copied as "<name><ext>"; null when the material has none. An asset
-        // that is not a separate image file (embedded in a model, or a package asset with no path on disk) cannot be
-        // read by Polysmith, so it is left out with a warning.
-        static string CopyMap(Material material, string property, string fallback, string name, string folder,
-            List<string> warnings)
-        {
-            Texture texture = material.HasProperty(property) ? material.GetTexture(property) : null;
-            if (texture == null && fallback != null && material.HasProperty(fallback))
-                texture = material.GetTexture(fallback);
-            if (texture == null)
-                return null;
-            string assetPath = AssetDatabase.GetAssetPath(texture);
-            string extension = Path.GetExtension(assetPath).ToLowerInvariant();
-            // Polysmith's image loader picks the decoder by extension and knows ".jpg", not ".jpeg".
-            if (extension == ".jpeg")
-                extension = ".jpg";
-            string source = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Application.dataPath), assetPath));
-            if (Array.IndexOf(ImageExtensions, extension) < 0 || File.Exists(source) == false)
+            var instance = Object.Instantiate(prefab);
+            var temporaryMaterials = new List<Material>();
+            GLTFSettings settings = null;
+            try
             {
-                warnings.Add($"Material '{material.name}' has a {property} that is not an image file on disk " +
-                             $"('{assetPath}'); it was not sent.");
-                return null;
+                instance.name = Sanitize(prefab.name);
+                instance.hideFlags = HideFlags.HideAndDontSave;
+                var parts = Parts(instance, warnings);
+                if (parts.Count == 0)
+                    throw new InvalidOperationException("The prefab has no triangle meshes to send to Polysmith.");
+                var materials = new Dictionary<Material, Material>();
+                var names = MaterialNames(parts);
+                foreach (var part in parts)
+                {
+                    SetMesh(part.Renderer, part.Mesh);
+                    var slots = (Material[])part.Materials.Clone();
+                    for (int i = 0; i < slots.Length; i++)
+                    {
+                        var source = slots[i];
+                        if (source == null)
+                            continue;
+                        if (materials.TryGetValue(source, out var copy) == false)
+                        {
+                            copy = new Material(source) { name = names[source] };
+                            temporaryMaterials.Add(copy);
+                            materials.Add(source, copy);
+                        }
+                        slots[i] = copy;
+                    }
+                    part.Renderer.sharedMaterials = slots;
+                    if (part.Mesh.blendShapeCount > 0)
+                        warnings.Add($"'{part.Mesh.name}': Polysmith does not currently return blend shapes.");
+                }
+                settings = GLTFSettings.GetDefaultSettings();
+                settings.ExportAnimations = true;
+                settings.BakeSkinnedMeshes = false;
+                settings.ExportDisabledGameObjects = true;
+                settings.UseMainCameraVisibility = false;
+                settings.ExportNames = true;
+                settings.ExportFullPath = false;
+                settings.BakeAnimationSpeed = false;
+                settings.UseCaching = false;
+                // Only core glTF animation/geometry is needed, not project-specific extension plugins.
+                foreach (var plugin in settings.ExportPlugins)
+                    plugin.Enabled = false;
+                var exporter = new GLTFSceneExporter(instance.transform, new ExportContext(settings));
+                exporter.SaveGLB(folder, Sanitize(prefab.name));
+                return Path.Combine(folder, Sanitize(prefab.name) + ".glb");
             }
-            string file = name + extension;
-            File.Copy(source, Path.Combine(folder, file), true);
-            return file;
+            finally
+            {
+                if (settings != null)
+                    Object.DestroyImmediate(settings);
+                Object.DestroyImmediate(instance);
+                foreach (var material in temporaryMaterials)
+                    Object.DestroyImmediate(material);
+            }
         }
 
-        /// <summary>Applies the "_lod.obj" files in <paramref name="folder"/> and returns the reduced mesh assets.</summary>
         public static List<Mesh> ApplyResults(GameObject prefab, string folder, List<string> warnings)
         {
-            string prefabPath = AssetDatabase.GetAssetPath(prefab);
-            string prefabFolder = Path.GetDirectoryName(prefabPath).Replace('\\', '/');
-            string output = null;
-            AtlasTextures textures = null;
-            ReducedMaterials materials = null;
-            var replacements = new Dictionary<Mesh, (Mesh Mesh, Material[] Materials)>();
-            // WriteRequest already reported the meshes it left out.
-            foreach (var part in Objects(prefab, new List<string>(), new Dictionary<string, Color>()))
-            {
-                string result = Path.Combine(folder, part.Name + "_lod.obj");
-                if (File.Exists(result) == false)
-                    continue;
-                if (output == null)
-                {
-                    output = EnsureFolder(EnsureFolder(prefabFolder, "Reduced"), Sanitize(prefab.name));
-                    textures = new AtlasTextures(output);
-                    materials = new ReducedMaterials(output, textures);
-                }
-
-                var exported = MtlFile.Read(result);
-                var groups = ObjMeshFile.GroupsOf(result, part.Groups);
-                var built = HasNormalMap(exported)
-                    ? TangentObjImport.Read(result, groups, part.Placement, warnings)
-                    : ObjMeshFile.Read(result, groups, part.Placement, warnings);
-                if (built == null)
-                    continue;
-                built.name = part.Name;
-                // As Unity's model importer does: buffers reordered for the GPU's vertex cache, and the UV metric texture
-                // streaming picks mip levels from (meshes built in code have none).
-                built.Optimize();
-                built.RecalculateUVDistributionMetrics();
-                var asset = Save(built, output);
-                RememberOrigin(asset, part);
-                replacements[part.Mesh] = (asset, SlotMaterials(part, groups, exported, materials, warnings));
-            }
-
-            if (replacements.Count > 0)
-                Repoint(prefabPath, replacements);
+            string result = Path.Combine(folder, Sanitize(prefab.name) + "_lod.glb");
             var reduced = new List<Mesh>();
-            foreach (var replacement in replacements.Values)
-                reduced.Add(replacement.Mesh);
-            return reduced;
-        }
-
-        static bool HasNormalMap(Dictionary<string, MtlMaterial> exported)
-        {
-            foreach (var material in exported.Values)
-                if (material.Maps.ContainsKey(MapKind.Normal))
-                    return true;
-            return false;
-        }
-
-        // The material per submesh of the result (`groups`: the part's submeshes, then its billboard groups): the reduced
-        // one where the export has maps, or where a reduced material whose maps must go now is the source (a prefab
-        // reduced before origins were kept); else the part's own material, which is the original (Objects). A billboard
-        // group gets its cut-out material, made from the part's first material; null keeps the slot as it is.
-        static Material[] SlotMaterials(Part part, IReadOnlyList<string> groups, Dictionary<string, MtlMaterial> exported,
-            ReducedMaterials materials, List<string> warnings)
-        {
-            var slots = new Material[groups.Count];
-            for (int submesh = 0; submesh < slots.Length; submesh++)
-            {
-                exported.TryGetValue(groups[submesh], out var maps);
-                if (submesh >= part.Groups.Length)
-                {
-                    var first = part.Materials.Length > 0 ? part.Materials[0] : null;
-                    if (first == null)
-                        warnings.Add($"'{part.Name}' has billboards but no material to make theirs from; their slot is empty.");
-                    else
-                        slots[submesh] = materials.GetBillboard($"{part.Name}_{groups[submesh]}", first,
-                            maps ?? new MtlMaterial(), warnings);
-                    continue;
-                }
-
-                var source = submesh < part.Materials.Length ? part.Materials[submesh] : null;
-                if (source == null)
-                    continue;
-                bool hasMaps = maps != null && maps.Maps.Count > 0;
-                bool wasReduced = Array.IndexOf(AssetDatabase.GetLabels(source), ReducedLabel) >= 0;
-                slots[submesh] = hasMaps || wasReduced
-                    ? materials.Get(groups[submesh], source, maps ?? new MtlMaterial(), warnings)
-                    : source;
-            }
-            return slots;
-        }
-
-        // Distinct meshes in hierarchy order, each named after its mesh and made unique, and placed where its first
-        // MeshFilter shows it in the prefab (the root's own rotation and scale included, so it stands as the prefab
-        // does). Only triangle meshes go: Polysmith reduces triangles. A reduced mesh stands for its original, with the
-        // original's materials (OriginOf): a round trip always starts from the originals.
-        // Each submesh's group is named after the material its first renderer shows there, so Polysmith gives every
-        // material one atlas shared by the parts that use it; `colours` collects each group's colour for the MTL.
-        static List<Part> Objects(GameObject prefab, List<string> warnings, Dictionary<string, Color> colours)
-        {
-            var objects = new List<Part>();
-            var seen = new HashSet<Mesh>();
-            // Names become file names, which differ only by more than case on Windows and macOS.
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var groupOfMaterial = new Dictionary<Material, string>();
-            foreach (var filter in prefab.GetComponentsInChildren<MeshFilter>(true))
-            {
-                if (filter.sharedMesh == null)
-                    continue;
-                var showing = filter.TryGetComponent(out MeshRenderer renderer) ? renderer.sharedMaterials : new Material[0];
-                var (mesh, materials) = OriginOf(filter.sharedMesh, showing, warnings);
-                if (seen.Add(mesh) == false)
-                    continue;
-                if (TrianglesOnly(mesh) == false)
-                {
-                    warnings.Add($"Mesh '{mesh.name}' on '{filter.name}' has a submesh that is not triangles; it was not sent.");
-                    continue;
-                }
-
-                string name = Sanitize(mesh.name);
-                if (name.Length == 0)
-                    name = "mesh";
-                string unique = name;
-                for (int suffix = 2; names.Add(unique) == false; suffix++)
-                    unique = $"{name}_{suffix}";
-                var groups = new string[mesh.subMeshCount];
-                for (int submesh = 0; submesh < groups.Length; submesh++)
-                {
-                    var material = submesh < materials.Length ? materials[submesh] : null;
-                    string group = material != null ? GroupOf(material, groupOfMaterial, colours) : "none";
-                    // One material on two submeshes of a mesh would merge them: the later one gets its own group.
-                    if (Array.IndexOf(groups, group, 0, submesh) >= 0)
-                        group = $"{group}_{unique}_{submesh}";
-                    colours[group] = material != null ? ColourOf(material) : Color.white;
-                    groups[submesh] = group;
-                }
-                objects.Add(new Part(unique, mesh, filter.transform.localToWorldMatrix, groups, materials));
-            }
-            return objects;
-        }
-
-        // A group name per material, unique ignoring case: different materials can share a name.
-        static string GroupOf(Material material, Dictionary<Material, string> groupOfMaterial, Dictionary<string, Color> colours)
-        {
-            if (groupOfMaterial.TryGetValue(material, out string group))
-                return group;
-            string name = Sanitize(material.name);
-            group = name;
-            for (int suffix = 2; ContainsIgnoringCase(colours.Keys, group); suffix++)
-                group = $"{name}_{suffix}";
-            groupOfMaterial[material] = group;
-            return group;
-        }
-
-        static bool ContainsIgnoringCase(IEnumerable<string> names, string name)
-        {
-            foreach (string existing in names)
-                if (string.Equals(existing, name, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            return false;
-        }
-
-        // The colour Polysmith shows: the base colour of URP/HDRP, or of the Built-in pipeline.
-        static Color ColourOf(Material material)
-        {
-            if (material.HasProperty("_BaseColor"))
-                return material.GetColor("_BaseColor");
-            return material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
-        }
-
-        readonly struct Part
-        {
-            public Part(string name, Mesh mesh, Matrix4x4 placement, string[] groups, Material[] materials)
-            {
-                Name = name;
-                Mesh = mesh;
-                Placement = placement;
-                Groups = groups;
-                Materials = materials;
-            }
-
-            public string Name { get; }
-            public Mesh Mesh { get; }
-            public Matrix4x4 Placement { get; }
-            public string[] Groups { get; }
-            // The first renderer's materials, one per submesh where it has them.
-            public Material[] Materials { get; }
-        }
-
-        static bool TrianglesOnly(Mesh mesh)
-        {
-            for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
-                if (mesh.GetTopology(submesh) != MeshTopology.Triangles)
-                    return false;
-            return true;
-        }
-
-        // An existing asset is overwritten in place, so its GUID and every reference to it survive. The file is named
-        // after the object because Unity names a mesh asset after its file: a later run then finds the same object.
-        static Mesh Save(Mesh built, string folder)
-        {
-            string path = $"{folder}/{built.name}.asset";
-
-            var asset = AssetDatabase.LoadAssetAtPath<Mesh>(path);
-            if (asset == null)
-            {
-                AssetDatabase.CreateAsset(built, path);
-                asset = built;
-            }
-            else
-            {
-                EditorUtility.CopySerialized(built, asset);
-                asset.name = built.name;
-                UnityEngine.Object.DestroyImmediate(built);
-                EditorUtility.SetDirty(asset);
-                AssetDatabase.SaveAssetIfDirty(asset);
-            }
-
-            var labels = new List<string>(AssetDatabase.GetLabels(asset));
-            if (labels.Contains(ReducedLabel) == false)
-            {
-                labels.Add(ReducedLabel);
-                AssetDatabase.SetLabels(asset, labels.ToArray());
-            }
-            return asset;
-        }
-
-        static string EnsureFolder(string parent, string name)
-        {
-            string folder = $"{parent}/{name}";
-            if (AssetDatabase.IsValidFolder(folder) == false)
-                AssetDatabase.CreateFolder(parent, name);
-            return folder;
-        }
-
-        // `replacements` is keyed by the original mesh; a MeshFilter may show it or an earlier reduction of it.
-        static void Repoint(string prefabPath, Dictionary<Mesh, (Mesh Mesh, Material[] Materials)> replacements)
-        {
+            if (File.Exists(result) == false)
+                return reduced;
+            string prefabPath = AssetDatabase.GetAssetPath(prefab);
             var contents = PrefabUtility.LoadPrefabContents(prefabPath);
             try
             {
-                foreach (var filter in contents.GetComponentsInChildren<MeshFilter>(true))
+                var parts = Parts(contents, warnings);
+                using (var imported = new GlbResult(result))
                 {
-                    if (filter.sharedMesh == null)
-                        continue;
-                    var original = OriginOf(filter.sharedMesh, new Material[0], new List<string>()).Mesh;
-                    if (replacements.TryGetValue(original, out var reduced) == false)
-                        continue;
-                    filter.sharedMesh = reduced.Mesh;
-                    if (filter.TryGetComponent(out MeshRenderer renderer) == false)
-                        continue;
-                    // One slot per submesh of the result: billboard slots are added after the mesh's own. Surplus slots
-                    // holding a material this tool made are an earlier export's billboards: Unity would draw the last
-                    // submesh again with each, so they go.
-                    var slots = new List<Material>(renderer.sharedMaterials);
-                    int count = reduced.Materials.Length;
-                    while (slots.Count > count && slots[slots.Count - 1] != null &&
-                           Array.IndexOf(AssetDatabase.GetLabels(slots[slots.Count - 1]), ReducedLabel) >= 0)
-                        slots.RemoveAt(slots.Count - 1);
-                    while (slots.Count < count)
-                        slots.Add(null);
-                    for (int slot = 0; slot < count; slot++)
-                        if (reduced.Materials[slot] != null)
-                            slots[slot] = reduced.Materials[slot];
-                    renderer.sharedMaterials = slots.ToArray();
+                    var incoming = imported.PrefabRoot;
+                    var replacements = new List<(Part Part, Mesh Mesh, Renderer Imported)>();
+                    try
+                    {
+                        // Validate all renderer/bone matches before writing assets or repointing the prefab.
+                        foreach (var part in parts)
+                        {
+                            var node = part.Path.Length == 0 ? incoming : incoming.Find(part.Path);
+                            if (node == null)
+                                throw new InvalidDataException("The result has no node at prefab path: " + part.Path);
+                            var renderer = node.GetComponent<Renderer>();
+                            var mesh = MeshOf(renderer);
+                            if (renderer != null && mesh == null)
+                                throw new InvalidDataException("The result has no mesh at: " + part.Path);
+                            // A fully hidden/reduced object keeps its hierarchy node but has no GLB mesh.
+                            // Replace it with an empty mesh rather than resurrecting its original geometry.
+                            var copy = mesh != null ? Object.Instantiate(mesh) : new Mesh { subMeshCount = 0 };
+                            try
+                            {
+                                if (part.Renderer is SkinnedMeshRenderer target && copy.vertexCount > 0)
+                                    BindToExistingRig(copy, renderer as SkinnedMeshRenderer, incoming, target, contents.transform,
+                                        part.Mesh);
+                                copy.name = part.Name;
+                                replacements.Add((part, copy, renderer));
+                            }
+                            catch
+                            {
+                                Object.DestroyImmediate(copy);
+                                throw;
+                            }
+                        }
+                        string output = EnsureFolder(EnsureFolder(Path.GetDirectoryName(prefabPath).Replace('\\', '/'),
+                            "Reduced"), Sanitize(prefab.name));
+                        var originals = new Dictionary<string, Material>(StringComparer.Ordinal);
+                        foreach (var entry in MaterialNames(parts))
+                            originals.Add(entry.Value, entry.Key);
+                        var materials = imported.SaveMaterials(output, originals);
+                        foreach (var item in replacements)
+                        {
+                            item.Mesh.Optimize();
+                            item.Mesh.RecalculateUVDistributionMetrics();
+                            var mesh = Save(item.Mesh, output + "/" + item.Mesh.name + ".asset");
+                            RememberOrigin(mesh, item.Part);
+                            var slots = item.Imported != null ? item.Imported.sharedMaterials : Array.Empty<Material>();
+                            for (int i = 0; i < slots.Length; i++)
+                                slots[i] = slots[i] != null ? materials[slots[i]] : null;
+                            SetMesh(item.Part.Renderer, mesh);
+                            item.Part.Renderer.sharedMaterials = slots;
+                            reduced.Add(mesh);
+                        }
+                        if (PrefabUtility.SaveAsPrefabAsset(contents, prefabPath) == null)
+                            throw new IOException("Could not save the prefab: " + prefabPath);
+                    }
+                    finally
+                    {
+                        foreach (var item in replacements)
+                            if (item.Mesh != null && AssetDatabase.Contains(item.Mesh) == false)
+                                Object.DestroyImmediate(item.Mesh);
+                    }
                 }
-                PrefabUtility.SaveAsPrefabAsset(contents, prefabPath);
             }
             finally
             {
                 PrefabUtility.UnloadPrefabContents(contents);
             }
+            return reduced;
         }
 
-        /// <summary>
-        /// What a reduced mesh was made from, kept in its asset's import settings (userData, JSON): the original mesh
-        /// and the original material of each slot, as "guid:localId" references (empty: none).
-        /// </summary>
-        [Serializable]
-        sealed class Origin
+        static List<Part> Parts(GameObject root, List<string> warnings)
         {
-            public string Mesh = "";
-            public string[] Materials = new string[0];
+            var parts = new List<Part>();
+            var paths = new HashSet<string>(StringComparer.Ordinal);
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var node in root.GetComponentsInChildren<Transform>(true))
+            {
+                string path = AnimationUtility.CalculateTransformPath(node, root.transform);
+                if (node.name.Contains("/") || paths.Add(path) == false)
+                    throw new InvalidDataException("Ambiguous prefab transform path: " + path);
+                var renderer = node.GetComponent<Renderer>();
+                var shown = MeshOf(renderer);
+                if (shown == null)
+                    continue;
+                var (mesh, materials) = OriginOf(shown, renderer.sharedMaterials, warnings);
+                for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
+                    if (mesh.GetTopology(submesh) != MeshTopology.Triangles)
+                        throw new NotSupportedException("Polysmith requires triangle meshes: " + path);
+                parts.Add(new Part { Renderer = renderer, Mesh = mesh, Materials = materials, Path = path,
+                    Name = Unique(Sanitize(mesh.name), names) });
+            }
+            return parts;
         }
 
-        static void RememberOrigin(Mesh reduced, Part part)
+        static Mesh MeshOf(Renderer renderer)
+        {
+            if (renderer is SkinnedMeshRenderer skin)
+                return skin.sharedMesh;
+            return renderer is MeshRenderer && renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+        }
+
+        static Dictionary<Material, string> MaterialNames(List<Part> parts)
+        {
+            var result = new Dictionary<Material, string>();
+            var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var part in parts)
+                foreach (var material in part.Materials)
+                    if (material != null && result.ContainsKey(material) == false)
+                        result.Add(material, Unique(Sanitize(material.name), used));
+            return result;
+        }
+
+        static void SetMesh(Renderer renderer, Mesh mesh)
+        {
+            if (renderer is SkinnedMeshRenderer skin)
+                skin.sharedMesh = mesh;
+            else
+                renderer.GetComponent<MeshFilter>().sharedMesh = mesh;
+        }
+
+        static void BindToExistingRig(Mesh mesh, SkinnedMeshRenderer source, Transform sourceRoot,
+            SkinnedMeshRenderer target, Transform targetRoot, Mesh original)
+        {
+            if (target.bones.Length == 0)
+                return;
+            if (source == null || mesh.boneWeights.Length != mesh.vertexCount)
+                throw new InvalidDataException("The result lost its skin at " + target.name);
+            var targetBones = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int b = 0; b < target.bones.Length; b++)
+                if (target.bones[b] != null)
+                    targetBones.Add(AnimationUtility.CalculateTransformPath(target.bones[b], targetRoot), b);
+            var map = new int[source.bones.Length];
+            for (int b = 0; b < map.Length; b++)
+                map[b] = source.bones[b] != null && targetBones.TryGetValue(
+                    AnimationUtility.CalculateTransformPath(source.bones[b], sourceRoot), out int index) ? index : -1;
+            int Bone(int index, float weight)
+            {
+                if (weight == 0)
+                    return 0;
+                if (index < 0 || index >= map.Length || map[index] < 0)
+                    throw new InvalidDataException("The result references a bone outside the original renderer: " + target.name);
+                return map[index];
+            }
+            var weights = mesh.boneWeights;
+            for (int v = 0; v < weights.Length; v++)
+            {
+                var w = weights[v];
+                w.boneIndex0 = Bone(w.boneIndex0, w.weight0);
+                w.boneIndex1 = Bone(w.boneIndex1, w.weight1);
+                w.boneIndex2 = Bone(w.boneIndex2, w.weight2);
+                w.boneIndex3 = Bone(w.boneIndex3, w.weight3);
+                weights[v] = w;
+            }
+            mesh.boneWeights = weights;
+            mesh.bindposes = original.bindposes;
+        }
+
+        static Mesh Save(Mesh mesh, string path)
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<Mesh>(path);
+            if (existing == null)
+            {
+                AssetDatabase.CreateAsset(mesh, path);
+                existing = mesh;
+            }
+            else
+            {
+                EditorUtility.CopySerialized(mesh, existing);
+                Object.DestroyImmediate(mesh);
+                EditorUtility.SetDirty(existing);
+                AssetDatabase.SaveAssetIfDirty(existing);
+            }
+            AssetDatabase.SetLabels(existing, new[] { ReducedLabel });
+            return existing;
+        }
+
+        static string EnsureFolder(string parent, string name)
+        {
+            string path = parent + "/" + name;
+            if (AssetDatabase.IsValidFolder(path) == false)
+                AssetDatabase.CreateFolder(parent, name);
+            return path;
+        }
+
+        static void RememberOrigin(Mesh mesh, Part part)
         {
             var origin = new Origin { Mesh = Reference(part.Mesh), Materials = new string[part.Materials.Length] };
-            for (int slot = 0; slot < part.Materials.Length; slot++)
-                origin.Materials[slot] = Reference(part.Materials[slot]);
-            var importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(reduced));
-            string json = JsonUtility.ToJson(origin);
-            if (importer.userData == json)
-                return;
-            importer.userData = json;
+            for (int i = 0; i < origin.Materials.Length; i++)
+                origin.Materials[i] = Reference(part.Materials[i]);
+            var importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(mesh));
+            importer.userData = JsonUtility.ToJson(origin);
             importer.SaveAndReimport();
         }
 
-        // The original mesh and materials `shown` stands for: those it remembers when it is a reduced mesh, else itself
-        // with `showing` (its renderer's materials). A reduced mesh whose original is gone stands for itself, with a
-        // warning.
-        static (Mesh Mesh, Material[] Materials) OriginOf(Mesh shown, Material[] showing, List<string> warnings)
+        static (Mesh Mesh, Material[] Materials) OriginOf(Mesh shown, Material[] materials, List<string> warnings)
         {
             if (Array.IndexOf(AssetDatabase.GetLabels(shown), ReducedLabel) < 0)
-                return (shown, showing);
+                return (shown, materials);
             var importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(shown));
             if (importer == null || string.IsNullOrEmpty(importer.userData))
-                return (shown, showing);
+                return (shown, materials);
             var origin = JsonUtility.FromJson<Origin>(importer.userData);
             var mesh = Load<Mesh>(origin.Mesh);
             if (mesh == null)
             {
-                warnings.Add($"The original of reduced mesh '{shown.name}' is gone: the reduced mesh was sent instead.");
-                return (shown, showing);
+                warnings.Add("The original mesh is missing: " + shown.name);
+                return (shown, materials);
             }
-            var materials = new Material[origin.Materials.Length];
-            for (int slot = 0; slot < materials.Length; slot++)
-                materials[slot] = Load<Material>(origin.Materials[slot]);
-            return (mesh, materials);
+            var originals = new Material[origin.Materials.Length];
+            for (int i = 0; i < originals.Length; i++)
+                originals[i] = Load<Material>(origin.Materials[i]);
+            return (mesh, originals);
         }
 
-        static string Reference(UnityEngine.Object asset) =>
-            asset != null && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long localId)
-                ? $"{guid}:{localId.ToString(CultureInfo.InvariantCulture)}"
-                : "";
+        static string Reference(Object asset) => asset != null &&
+            AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long id)
+                ? guid + ":" + id.ToString(CultureInfo.InvariantCulture) : "";
 
-        // The asset a Reference names (a mesh inside a model file is one of its sub-assets); null when it is gone.
-        static T Load<T>(string reference) where T : UnityEngine.Object
+        static T Load<T>(string reference) where T : Object
         {
             int colon = reference.IndexOf(':');
             if (colon < 0)
                 return null;
-            long localId = long.Parse(reference.Substring(colon + 1), CultureInfo.InvariantCulture);
-            string path = AssetDatabase.GUIDToAssetPath(reference.Substring(0, colon));
-            if (string.IsNullOrEmpty(path))
-                return null;
-            foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(path))
-                if (asset is T typed && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string _, out long id) &&
-                    id == localId)
+            long id = long.Parse(reference.Substring(colon + 1), CultureInfo.InvariantCulture);
+            foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GUIDToAssetPath(reference.Substring(0, colon))))
+                if (asset is T typed && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string _, out long local) && id == local)
                     return typed;
             return null;
         }
 
-        // Object and file names: letters, digits, '_' and '-' only.
-        static string Sanitize(string name)
+        internal static string Sanitize(string name)
         {
-            var sanitized = new StringBuilder(name.Length);
+            var text = new StringBuilder();
             foreach (char c in name)
-                sanitized.Append(char.IsLetterOrDigit(c) || c == '_' || c == '-' ? c : '_');
-            return sanitized.ToString();
+                text.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_');
+            return text.Length == 0 ? "mesh" : text.ToString();
+        }
+
+        internal static string Unique(string name, HashSet<string> names)
+        {
+            string candidate = name;
+            for (int suffix = 2; names.Add(candidate) == false; suffix++)
+                candidate = name + "_" + suffix;
+            return candidate;
+        }
+
+        sealed class Part
+        {
+            public Renderer Renderer;
+            public Mesh Mesh;
+            public Material[] Materials;
+            public string Path;
+            public string Name;
+        }
+
+        [Serializable]
+        sealed class Origin
+        {
+            public string Mesh = "";
+            public string[] Materials = Array.Empty<string>();
         }
     }
 }
+#endif
