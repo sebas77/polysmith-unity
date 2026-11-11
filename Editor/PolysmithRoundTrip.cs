@@ -6,6 +6,8 @@ using System.IO;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
 using UnityGLTF;
 using Object = UnityEngine.Object;
 
@@ -129,9 +131,10 @@ namespace Polysmith
                         var originals = new Dictionary<string, Material>(StringComparer.Ordinal);
                         foreach (var entry in MaterialNames(parts))
                             originals.Add(entry.Value, entry.Key);
-                        var materials = imported.SaveMaterials(output, originals);
+                        var materials = imported.SaveMaterials(output, originals, warnings);
                         foreach (var item in replacements)
                         {
+                            ApplyBaseVertices(item.Mesh);
                             item.Mesh.Optimize();
                             item.Mesh.RecalculateUVDistributionMetrics();
                             var mesh = Save(item.Mesh, output + "/" + item.Mesh.name + ".asset");
@@ -145,6 +148,7 @@ namespace Polysmith
                         }
                         if (PrefabUtility.SaveAsPrefabAsset(contents, prefabPath) == null)
                             throw new IOException("Could not save the prefab: " + prefabPath);
+                        RevertSceneOverrides(prefabPath, warnings);
                     }
                     finally
                     {
@@ -159,6 +163,46 @@ namespace Polysmith
                 PrefabUtility.UnloadPrefabContents(contents);
             }
             return reduced;
+        }
+
+        // A scene instance that overrides a renderer's mesh or materials keeps drawing its own, so the result applied
+        // to the prefab would not show on it. Revert those overrides on every instance in the loaded scenes (undoable;
+        // the scene is left modified, not saved). Unloaded scenes and outer prefabs keep theirs.
+        static void RevertSceneOverrides(string prefabPath, List<string> warnings)
+        {
+            var instances = new HashSet<string>(StringComparer.Ordinal);
+            for (int s = 0; s < SceneManager.sceneCount; s++)
+            {
+                var scene = SceneManager.GetSceneAt(s);
+                if (scene.isLoaded == false)
+                    continue;
+                foreach (var root in scene.GetRootGameObjects())
+                    foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
+                    {
+                        if (PrefabUtility.IsPartOfPrefabInstance(renderer) == false ||
+                            MeshOf(PrefabUtility.GetCorrespondingObjectFromSourceAtPath(renderer, prefabPath)) == null)
+                            continue;
+                        bool reverted = Revert(renderer, "m_Materials");
+                        if (renderer is SkinnedMeshRenderer)
+                            reverted |= Revert(renderer, "m_Mesh");
+                        else if (renderer.TryGetComponent<MeshFilter>(out var filter))
+                            reverted |= Revert(filter, "m_Mesh");
+                        if (reverted)
+                            instances.Add((scene.name.Length > 0 ? scene.name : "Untitled") + "/" +PrefabUtility.GetOutermostPrefabInstanceRoot(renderer).name);
+                    }
+            }
+            if (instances.Count > 0)
+                warnings.Add("Reverted mesh/material overrides that hid the result on " + string.Join(", ", instances) +
+                             ". Save the scene to keep this (Undo restores them).");
+        }
+
+        static bool Revert(Object component, string property)
+        {
+            var field = new SerializedObject(component).FindProperty(property);
+            if (field == null || field.prefabOverride == false)
+                return false;
+            PrefabUtility.RevertPropertyOverride(field, InteractionMode.UserAction);
+            return true;
         }
 
         static List<Part> Parts(GameObject root, List<string> warnings)
@@ -248,6 +292,16 @@ namespace Polysmith
             mesh.bindposes = original.bindposes;
         }
 
+        // Mesh.Optimize ignores submesh base vertices. UnityGLTF imports every glTF primitive after the first (such
+        // as Polysmith's billboard cards, which have their own vertices) with one, so after Optimize that submesh
+        // would draw the first submesh's vertices and its own would be dropped. Bake the base vertices into the
+        // indices first.
+        static void ApplyBaseVertices(Mesh mesh)
+        {
+            for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+                mesh.SetIndices(mesh.GetIndices(subMesh, true), mesh.GetTopology(subMesh), subMesh, false, 0);
+        }
+
         static Mesh Save(Mesh mesh, string path)
         {
             var existing = AssetDatabase.LoadAssetAtPath<Mesh>(path);
@@ -258,13 +312,61 @@ namespace Polysmith
             }
             else
             {
-                EditorUtility.CopySerialized(mesh, existing);
+                // Overwritten in place, so whatever references the asset keeps it. Not with CopySerialized: on a
+                // mesh it keeps old vertex data (an empty result kept the old vertices and skin, a result without
+                // UV2 kept the old UV2), and a skinned renderer then stops with "does not match the expected mesh
+                // data size and vertex stride".
+                Replace(existing, mesh);
                 Object.DestroyImmediate(mesh);
                 EditorUtility.SetDirty(existing);
                 AssetDatabase.SaveAssetIfDirty(existing);
             }
             AssetDatabase.SetLabels(existing, new[] { ReducedLabel });
             return existing;
+        }
+
+        // The mesh API replaces the live mesh and its saved data together. Results carry no blend shapes.
+        static void Replace(Mesh target, Mesh source)
+        {
+            target.Clear();
+            target.ClearBlendShapes();
+            using (var read = Mesh.AcquireReadOnlyMeshData(source))
+            {
+                var input = read[0];
+                var write = Mesh.AllocateWritableMeshData(1);
+                var output = write[0];
+                output.SetVertexBufferParams(input.vertexCount, source.GetVertexAttributes());
+                for (int stream = 0; stream < input.vertexBufferCount; stream++)
+                    output.GetVertexData<byte>(stream).CopyFrom(input.GetVertexData<byte>(stream));
+                switch (input.indexFormat)
+                {
+                    case IndexFormat.UInt16:
+                        CopyIndices<ushort>(input, output);
+                        break;
+                    case IndexFormat.UInt32:
+                        CopyIndices<uint>(input, output);
+                        break;
+                }
+                output.subMeshCount = input.subMeshCount;
+                for (int subMesh = 0; subMesh < input.subMeshCount; subMesh++)
+                    output.SetSubMesh(subMesh, input.GetSubMesh(subMesh), MeshUpdateFlags.DontRecalculateBounds);
+                Mesh.ApplyAndDisposeWritableMeshData(write, target, MeshUpdateFlags.DontRecalculateBounds);
+            }
+            target.bindposes = source.bindposes;
+            // A static mesh has no skin to set.
+            if (source.HasVertexAttribute(VertexAttribute.BlendIndices))
+                target.SetBoneWeights(source.GetBonesPerVertex(), source.GetAllBoneWeights());
+            target.bounds = source.bounds;
+            target.name = source.name;
+            // Mesh data does not carry the metrics.
+            target.RecalculateUVDistributionMetrics();
+        }
+
+        static void CopyIndices<T>(Mesh.MeshData input, Mesh.MeshData output) where T : struct
+        {
+            var indices = input.GetIndexData<T>();
+            output.SetIndexBufferParams(indices.Length, input.indexFormat);
+            output.GetIndexData<T>().CopyFrom(indices);
         }
 
         static string EnsureFolder(string parent, string name)

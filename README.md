@@ -25,7 +25,8 @@ the GLB assembly only when UnityGLTF 2.24.0 or newer is installed.
 ## Use
 
 1. In the Project window, right-click a prefab → **Optimise in Polysmith**. Its meshes open in Polysmith, placed as the
-   prefab shows them.
+   prefab shows them. In the Hierarchy, right-clicking a prefab instance → **Optimise in Polysmith** does the same for
+   that instance's prefab asset, so every instance of the prefab shows the result.
 2. Reduce them, then press **Replace prefab mesh**, which writes `<prefab>_lod.glb` next to the request.
    Every export updates the prefab in Unity straight away, so you can look at it and export again.
 3. Close Polysmith to finish.
@@ -50,11 +51,17 @@ When Polysmith merged materials, a part's result names the merged material (afte
 another part's): the part then has one submesh per material it uses, and every part merged into one material shares one
 reduced material.
 
-Embedded atlas maps are saved as PNGs in `Reduced/<prefab>/`, with UnityGLTF materials
-saved beside the meshes. They use glTF's channel packing (including RGB normals), not
-Unity Standard's metal/smoothness packing. Unity builds their mips and calculates tangents.
+Atlas materials are saved beside the meshes on the render pipeline's own Lit shader: URP Lit, HDRP Lit, or Standard
+on the built-in pipeline (UnityGLTF's shader only when the pipeline's default material is none of those). Their maps
+are saved in `Reduced/<prefab>/` in the form that shader samples: normal maps imported as normal maps, glTF
+metallic-roughness repacked as Unity's metallic/smoothness map (URP, Standard) or HDRP's mask map, occlusion moved to
+the channel Unity reads. Keywords and render states come from the shader's own editor. To use another shader, change
+the reduced material's shader: later exports keep that material and only rewrite its maps in place.
 Billboard primitives/materials are imported from the same GLB; no sidecar OBJ or MTL is used.
 Original-UV results without baked maps reuse the remembered source materials by slot name.
+
+Every export also reverts mesh and material overrides on the prefab's instances in the open scenes, which would otherwise
+keep drawing the old meshes (logged as a warning; undoable; the scene is left to save). Other overrides stay.
 
 ## AI / Unity CLI
 
@@ -131,7 +138,8 @@ Integration tests use synthetic outputs from `PolysmithLodSetSmoke.py`; set
 - Prefab assets only, not model files (FBX, OBJ) and not objects in a scene.
 - Meshes come back with positions, normals, the first UV set (the atlas UVs when there are maps), tangents when
   there is a normal map, and their submeshes. Vertex colours, other UV sets and blend shapes are not kept.
-- Returned materials use UnityGLTF's shaders. Custom shader properties outside glTF are not transferred.
+- Returned atlas materials use the pipeline's Lit shader; the original material's custom shader and properties outside
+  glTF are not transferred. HDRP Lit mapping is not yet verified in an HDRP project.
 - Polysmith's GLB writer currently omits blend shapes and original-UV source textures.
 - Ambiguous/missing transform paths and bones outside the original renderer are rejected.
 - A fully hidden object keeps its renderer/bones but receives an empty mesh, so its original geometry does not reappear.

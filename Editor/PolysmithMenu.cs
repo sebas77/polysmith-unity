@@ -9,22 +9,42 @@ using Debug = UnityEngine.Debug;
 namespace Polysmith
 {
     /// <summary>
-    /// Assets menu "Optimise in Polysmith": opens the selected prefab's meshes in a Polysmith of its own (several prefabs
+    /// "Optimise in Polysmith", in the Assets menu for a prefab asset and in the Hierarchy menu for a prefab instance
+    /// (which opens the instance's prefab asset): opens the prefab's meshes in a Polysmith of its own (several prefabs
     /// can be open at once); while it is open, every export is applied to the prefab (see <see cref="PolysmithWatcher"/>).
     /// The path of Polysmith.exe is asked once and kept per machine.
     /// </summary>
     static class PolysmithMenu
     {
         [MenuItem(MenuPath, true)]
-        // Model files (FBX, OBJ) are prefab assets too, but they cannot be saved as prefabs.
-        static bool CanOptimise() => Selection.activeObject is GameObject selected &&
-                                     PrefabUtility.IsPartOfPrefabAsset(selected) &&
-                                     PrefabUtility.IsPartOfModelPrefab(selected) == false;
+        static bool CanOptimise() => Selection.activeObject is GameObject selected && IsEditablePrefab(selected);
 
         [MenuItem(MenuPath)]
-        static void Optimise()
+        static void Optimise() => Optimise(((GameObject)Selection.activeObject).transform.root.gameObject);
+
+        [MenuItem(HierarchyMenuPath, true)]
+        static bool CanOptimiseInstance() => InstancePrefab(Selection.activeGameObject) != null;
+
+        // Edits the prefab asset, so every instance of it shows the result, as with the Assets menu.
+        [MenuItem(HierarchyMenuPath, false, HierarchyMenuPriority)]
+        static void OptimiseInstance() => Optimise(InstancePrefab(Selection.activeGameObject));
+
+        // Model files (FBX, OBJ) are prefab assets too, but they cannot be saved as prefabs.
+        static bool IsEditablePrefab(GameObject asset) => PrefabUtility.IsPartOfPrefabAsset(asset) &&
+                                                          PrefabUtility.IsPartOfModelPrefab(asset) == false;
+
+        // The prefab asset of the outermost prefab instance the scene object belongs to; null for anything else.
+        static GameObject InstancePrefab(GameObject sceneObject)
         {
-            var prefab = ((GameObject)Selection.activeObject).transform.root.gameObject;
+            if (sceneObject == null || PrefabUtility.IsPartOfPrefabInstance(sceneObject) == false)
+                return null;
+            var root = PrefabUtility.GetOutermostPrefabInstanceRoot(sceneObject);
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(root));
+            return asset != null && IsEditablePrefab(asset) ? asset : null;
+        }
+
+        static void Optimise(GameObject prefab)
+        {
             // Every prefab gets its own Polysmith; one prefab has one at a time, or both would write its reduced assets.
             if (PolysmithWatcher.IsOpen(AssetDatabase.GetAssetPath(prefab)))
             {
@@ -122,6 +142,9 @@ namespace Polysmith
         }
 
         const string MenuPath = "Assets/Optimise in Polysmith";
+        // GameObject/ items with a low priority are what the Hierarchy context menu lists (glTFast's export uses 31).
+        const string HierarchyMenuPath = "GameObject/Optimise in Polysmith";
+        const int HierarchyMenuPriority = 30;
         const string ExePathKey = "Polysmith.ExePath";
     }
 }
