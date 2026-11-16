@@ -49,3 +49,20 @@ Only the SAME prefab is refused while its round trip is open (both would write
 its reduced assets). A round trip open under the old single-trip keys
 ("Polysmith.RoundTrip.*") when this code loads is not migrated: its Polysmith
 keeps running but is no longer applied. Compiles against 6000.6.2f1; NOT run.
+
+## Single mesh round trip (Seb, 2026-11-16, uncommitted)
+
+- Assets → Optimise in Polysmith also takes exactly ONE mesh asset (PolysmithMeshRoundTrip.cs). No multiple
+  selection, by Seb's decision: a mesh drawn by several objects cannot be sent more than once. Scene-object sets
+  (world-placed tiles in one Polysmith, for seam-free terrain) were discussed and dropped.
+- Sent alone at the origin with the first open-scene user's (original) materials; a placeholder material when unused.
+  Skinned meshes (bindposes) refused. Watcher key "mesh:<guid:fileId of the original>", request JSON kept in the trip.
+- Result: <mesh folder>/Reduced/<name>/<name>.asset (Assets/Reduced when outside Assets/), labelled and remembering
+  its origin; a folder holding another mesh's result gets _2, ...; the folder is created at request time and deleted
+  on close if still empty. Every MeshFilter in the open scenes drawing the original or a result is repointed (Undo,
+  scene dirtied, prefab instance modifications recorded). Atlas results set their materials; original-UV results keep
+  each user's own original materials when the slot count matches. Prefab assets untouched.
+- Known consequence: tiles reduced one by one can crack at seams unless their borders are kept.
+- Verified in lodtest (6000.6.8f1, testables added temporarily, manifest restored): 6 new tests + all round-trip tests
+  pass. PolysmithLodSetTests.RejectsUnsafeOrUnorderedLevels(...0.8d,0.25d) fails the same way without these changes
+  ("Cannot import LOD model" IOException instead of InvalidDataException). Not tried with a real Polysmith export.

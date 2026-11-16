@@ -25,7 +25,6 @@ namespace Polysmith
         {
             var instance = Object.Instantiate(prefab);
             var temporaryMaterials = new List<Material>();
-            GLTFSettings settings = null;
             try
             {
                 instance.name = Sanitize(prefab.name);
@@ -33,29 +32,52 @@ namespace Polysmith
                 var parts = Parts(instance, warnings);
                 if (parts.Count == 0)
                     throw new InvalidOperationException("The prefab has no triangle meshes to send to Polysmith.");
-                var materials = new Dictionary<Material, Material>();
-                var names = MaterialNames(parts);
-                foreach (var part in parts)
+                ShowOriginals(parts, temporaryMaterials, warnings);
+                return Export(instance, folder, Sanitize(prefab.name));
+            }
+            finally
+            {
+                Object.DestroyImmediate(instance);
+                foreach (var material in temporaryMaterials)
+                    Object.DestroyImmediate(material);
+            }
+        }
+
+        // Every part's renderer in the temporary copy draws its original mesh, with copies of its original materials
+        // named as the result will name them (see MaterialNames).
+        internal static void ShowOriginals(List<Part> parts, List<Material> temporaryMaterials, List<string> warnings)
+        {
+            var materials = new Dictionary<Material, Material>();
+            var names = MaterialNames(parts);
+            foreach (var part in parts)
+            {
+                SetMesh(part.Renderer, part.Mesh);
+                var slots = (Material[])part.Materials.Clone();
+                for (int i = 0; i < slots.Length; i++)
                 {
-                    SetMesh(part.Renderer, part.Mesh);
-                    var slots = (Material[])part.Materials.Clone();
-                    for (int i = 0; i < slots.Length; i++)
+                    var source = slots[i];
+                    if (source == null)
+                        continue;
+                    if (materials.TryGetValue(source, out var copy) == false)
                     {
-                        var source = slots[i];
-                        if (source == null)
-                            continue;
-                        if (materials.TryGetValue(source, out var copy) == false)
-                        {
-                            copy = new Material(source) { name = names[source] };
-                            temporaryMaterials.Add(copy);
-                            materials.Add(source, copy);
-                        }
-                        slots[i] = copy;
+                        copy = new Material(source) { name = names[source] };
+                        temporaryMaterials.Add(copy);
+                        materials.Add(source, copy);
                     }
-                    part.Renderer.sharedMaterials = slots;
-                    if (part.Mesh.blendShapeCount > 0)
-                        warnings.Add($"'{part.Mesh.name}': Polysmith does not currently return blend shapes.");
+                    slots[i] = copy;
                 }
+                part.Renderer.sharedMaterials = slots;
+                if (part.Mesh.blendShapeCount > 0)
+                    warnings.Add($"'{part.Mesh.name}': Polysmith does not currently return blend shapes.");
+            }
+        }
+
+        // The GLB request "<name>.glb" in folder, with root as its one root node.
+        internal static string Export(GameObject root, string folder, string name)
+        {
+            GLTFSettings settings = null;
+            try
+            {
                 settings = GLTFSettings.GetDefaultSettings();
                 settings.ExportAnimations = true;
                 settings.BakeSkinnedMeshes = false;
@@ -68,17 +90,14 @@ namespace Polysmith
                 // Only core glTF animation/geometry is needed, not project-specific extension plugins.
                 foreach (var plugin in settings.ExportPlugins)
                     plugin.Enabled = false;
-                var exporter = new GLTFSceneExporter(instance.transform, new ExportContext(settings));
-                exporter.SaveGLB(folder, Sanitize(prefab.name));
-                return Path.Combine(folder, Sanitize(prefab.name) + ".glb");
+                var exporter = new GLTFSceneExporter(root.transform, new ExportContext(settings));
+                exporter.SaveGLB(folder, name);
+                return Path.Combine(folder, name + ".glb");
             }
             finally
             {
                 if (settings != null)
                     Object.DestroyImmediate(settings);
-                Object.DestroyImmediate(instance);
-                foreach (var material in temporaryMaterials)
-                    Object.DestroyImmediate(material);
             }
         }
 
@@ -134,11 +153,8 @@ namespace Polysmith
                         var materials = imported.SaveMaterials(output, originals, warnings);
                         foreach (var item in replacements)
                         {
-                            ApplyBaseVertices(item.Mesh);
-                            item.Mesh.Optimize();
-                            item.Mesh.RecalculateUVDistributionMetrics();
-                            var mesh = Save(item.Mesh, output + "/" + item.Mesh.name + ".asset");
-                            RememberOrigin(mesh, item.Part);
+                            var mesh = SaveResult(item.Mesh, output + "/" + item.Mesh.name + ".asset", item.Part.Mesh,
+                                item.Part.Materials);
                             var slots = item.Imported != null ? item.Imported.sharedMaterials : Array.Empty<Material>();
                             for (int i = 0; i < slots.Length; i++)
                                 slots[i] = slots[i] != null ? materials[slots[i]] : null;
@@ -205,6 +221,17 @@ namespace Polysmith
             return true;
         }
 
+        // The imported result mesh, saved at path (overwritten in place) and remembering its original mesh/materials.
+        internal static Mesh SaveResult(Mesh result, string path, Mesh original, Material[] originalMaterials)
+        {
+            ApplyBaseVertices(result);
+            result.Optimize();
+            result.RecalculateUVDistributionMetrics();
+            var mesh = Save(result, path);
+            RememberOrigin(mesh, original, originalMaterials);
+            return mesh;
+        }
+
         static List<Part> Parts(GameObject root, List<string> warnings)
         {
             var parts = new List<Part>();
@@ -229,14 +256,14 @@ namespace Polysmith
             return parts;
         }
 
-        static Mesh MeshOf(Renderer renderer)
+        internal static Mesh MeshOf(Renderer renderer)
         {
             if (renderer is SkinnedMeshRenderer skin)
                 return skin.sharedMesh;
             return renderer is MeshRenderer && renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
         }
 
-        static Dictionary<Material, string> MaterialNames(List<Part> parts)
+        internal static Dictionary<Material, string> MaterialNames(List<Part> parts)
         {
             var result = new Dictionary<Material, string>();
             var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -247,7 +274,7 @@ namespace Polysmith
             return result;
         }
 
-        static void SetMesh(Renderer renderer, Mesh mesh)
+        internal static void SetMesh(Renderer renderer, Mesh mesh)
         {
             if (renderer is SkinnedMeshRenderer skin)
                 skin.sharedMesh = mesh;
@@ -369,7 +396,7 @@ namespace Polysmith
             output.GetIndexData<T>().CopyFrom(indices);
         }
 
-        static string EnsureFolder(string parent, string name)
+        internal static string EnsureFolder(string parent, string name)
         {
             string path = parent + "/" + name;
             if (AssetDatabase.IsValidFolder(path) == false)
@@ -377,17 +404,17 @@ namespace Polysmith
             return path;
         }
 
-        static void RememberOrigin(Mesh mesh, Part part)
+        static void RememberOrigin(Mesh mesh, Mesh original, Material[] materials)
         {
-            var origin = new Origin { Mesh = Reference(part.Mesh), Materials = new string[part.Materials.Length] };
+            var origin = new Origin { Mesh = Reference(original), Materials = new string[materials.Length] };
             for (int i = 0; i < origin.Materials.Length; i++)
-                origin.Materials[i] = Reference(part.Materials[i]);
+                origin.Materials[i] = Reference(materials[i]);
             var importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(mesh));
             importer.userData = JsonUtility.ToJson(origin);
             importer.SaveAndReimport();
         }
 
-        static (Mesh Mesh, Material[] Materials) OriginOf(Mesh shown, Material[] materials, List<string> warnings)
+        internal static (Mesh Mesh, Material[] Materials) OriginOf(Mesh shown, Material[] materials, List<string> warnings)
         {
             if (Array.IndexOf(AssetDatabase.GetLabels(shown), ReducedLabel) < 0)
                 return (shown, materials);
@@ -407,11 +434,11 @@ namespace Polysmith
             return (mesh, originals);
         }
 
-        static string Reference(Object asset) => asset != null &&
+        internal static string Reference(Object asset) => asset != null &&
             AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long id)
                 ? guid + ":" + id.ToString(CultureInfo.InvariantCulture) : "";
 
-        static T Load<T>(string reference) where T : Object
+        internal static T Load<T>(string reference) where T : Object
         {
             int colon = reference.IndexOf(':');
             if (colon < 0)
@@ -439,7 +466,7 @@ namespace Polysmith
             return candidate;
         }
 
-        sealed class Part
+        internal sealed class Part
         {
             public Renderer Renderer;
             public Mesh Mesh;

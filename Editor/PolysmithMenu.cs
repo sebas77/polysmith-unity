@@ -9,18 +9,28 @@ using Debug = UnityEngine.Debug;
 namespace Polysmith
 {
     /// <summary>
-    /// "Optimise in Polysmith", in the Assets menu for a prefab asset and in the Hierarchy menu for a prefab instance
-    /// (which opens the instance's prefab asset): opens the prefab's meshes in a Polysmith of its own (several prefabs
-    /// can be open at once); while it is open, every export is applied to the prefab (see <see cref="PolysmithWatcher"/>).
-    /// The path of Polysmith.exe is asked once and kept per machine.
+    /// "Optimise in Polysmith", in the Assets menu for a prefab asset or one mesh asset, and in the Hierarchy menu for a
+    /// prefab instance (which opens the instance's prefab asset): opens the prefab's meshes, or the mesh, in a Polysmith
+    /// of its own (several can be open at once); while it is open, every export is applied (see
+    /// <see cref="PolysmithWatcher"/>). The path of Polysmith.exe is asked once and kept per machine.
     /// </summary>
     static class PolysmithMenu
     {
         [MenuItem(MenuPath, true)]
-        static bool CanOptimise() => Selection.activeObject is GameObject selected && IsEditablePrefab(selected);
+        static bool CanOptimise() => Selection.activeObject is GameObject selected ? IsEditablePrefab(selected) : SelectedMesh() != null;
 
         [MenuItem(MenuPath)]
-        static void Optimise() => Optimise(((GameObject)Selection.activeObject).transform.root.gameObject);
+        static void Optimise()
+        {
+            if (Selection.activeObject is GameObject selected)
+                Optimise(selected.transform.root.gameObject);
+            else
+                OptimiseMesh(SelectedMesh());
+        }
+
+        // One mesh asset alone: a mesh used by several objects cannot be sent more than once, so no multiple selection.
+        static Mesh SelectedMesh() => Selection.objects.Length == 1 && Selection.activeObject is Mesh mesh &&
+                                      AssetDatabase.Contains(mesh) ? mesh : null;
 
         [MenuItem(HierarchyMenuPath, true)]
         static bool CanOptimiseInstance() => InstancePrefab(Selection.activeGameObject) != null;
@@ -66,6 +76,42 @@ namespace Polysmith
             }
         }
 
+        static void OptimiseMesh(Mesh mesh)
+        {
+            string key = PolysmithMeshRoundTrip.Key(mesh);
+            if (PolysmithWatcher.IsOpen(key))
+            {
+                EditorUtility.DisplayDialog("Optimise in Polysmith",
+                    $"Polysmith is already open for '{mesh.name}'. Close it to finish that round trip first.", "OK");
+                return;
+            }
+            string exe = FindExe();
+            if (exe == null)
+                return;
+
+            string folder = NewFolder();
+            PolysmithMeshRoundTrip.Request request = null;
+            try
+            {
+                var warnings = new List<string>();
+                request = PolysmithMeshRoundTrip.WriteRequest(mesh, folder, warnings);
+                foreach (string warning in warnings)
+                    Debug.LogWarning("Polysmith: " + warning);
+                Launch(exe, request.Glb, folder, false, process => PolysmithWatcher.Start(key, folder, process, request));
+                Debug.Log($"Polysmith: opened mesh '{mesh.name}'. Each export updates the objects drawing it; close Polysmith to finish.");
+            }
+            catch (Exception error)
+            {
+                if (PolysmithWatcher.IsOpen(key) == false)
+                {
+                    Directory.Delete(folder, true);
+                    if (request != null)
+                        PolysmithMeshRoundTrip.DeleteUnusedOutput(request);
+                }
+                EditorUtility.DisplayDialog("Optimise in Polysmith", error.Message, "OK");
+            }
+        }
+
         // Shared launch path for the menu and the prefab-only automation API.
         // Automation never opens a picker or applies a result; the watcher only
         // receives files when an explicit export is requested in Polysmith.
@@ -75,8 +121,7 @@ namespace Polysmith
             if (PolysmithWatcher.IsOpen(prefabPath))
                 throw new InvalidOperationException($"Polysmith is already open for '{prefabPath}'.");
 
-            string folder = Path.Combine(Path.GetTempPath(), "polysmith_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(folder);
+            string folder = NewFolder();
             var warnings = new List<string>();
             string request;
             try
@@ -90,22 +135,11 @@ namespace Polysmith
             }
             foreach (string warning in warnings)
                 Debug.LogWarning("Polysmith: " + warning);
-            // --unity-roundtrip shows Polysmith's "Replace prefab mesh" button, which writes every part's result file.
             try
             {
-                using (var process = Process.Start(new ProcessStartInfo(exe,
-                           $"\"{request}\" --unity-roundtrip" + (automation ? " --automation" : ""))
-                   {
-                       UseShellExecute = false,
-                       WorkingDirectory = automation ? folder : WorkingFolder(exe)
-                   }))
-                {
-                    if (process == null)
-                        throw new InvalidOperationException("Polysmith did not start.");
-                    PolysmithWatcher.Start(prefabPath, folder, process);
-                    Debug.Log($"Polysmith: opened '{prefab.name}'. Each export updates the prefab; close Polysmith to finish.");
-                    return process.Id;
-                }
+                int id = Launch(exe, request, folder, automation, process => PolysmithWatcher.Start(prefabPath, folder, process));
+                Debug.Log($"Polysmith: opened '{prefab.name}'. Each export updates the prefab; close Polysmith to finish.");
+                return id;
             }
             catch
             {
@@ -113,6 +147,31 @@ namespace Polysmith
                 if (PolysmithWatcher.IsOpen(prefabPath) == false)
                     Directory.Delete(folder, true);
                 throw;
+            }
+        }
+
+        static string NewFolder()
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "polysmith_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            return folder;
+        }
+
+        // Starts Polysmith on the request and hands its process to register (the watcher); returns the process id.
+        static int Launch(string exe, string request, string folder, bool automation, Action<Process> register)
+        {
+            // --unity-roundtrip shows Polysmith's "Replace prefab mesh" button, which writes every part's result file.
+            // Every interactive Polysmith has its automation mailbox: the removed --automation flag is refused.
+            using (var process = Process.Start(new ProcessStartInfo(exe, $"\"{request}\" --unity-roundtrip")
+                   {
+                       UseShellExecute = false,
+                       WorkingDirectory = automation ? folder : WorkingFolder(exe)
+                   }))
+            {
+                if (process == null)
+                    throw new InvalidOperationException("Polysmith did not start.");
+                register(process);
+                return process.Id;
             }
         }
 

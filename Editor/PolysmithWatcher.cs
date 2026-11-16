@@ -11,9 +11,10 @@ using Debug = UnityEngine.Debug;
 namespace Polysmith
 {
     /// <summary>
-    /// Follows the running Polysmith round trips, one Polysmith per prefab: each time a Polysmith writes its "_lod.glb"
-    /// file, it is applied to its prefab (<see cref="PolysmithRoundTrip.ApplyResults"/>); when it closes, its round
-    /// trip ends and its temp folder is deleted. The round trips live in SessionState, so they survive a script reload.
+    /// Follows the running Polysmith round trips, one Polysmith per prefab or mesh: each time a Polysmith writes its
+    /// "_lod.glb" file, it is applied to its prefab (<see cref="PolysmithRoundTrip.ApplyResults"/>) or mesh
+    /// (<see cref="PolysmithMeshRoundTrip.ApplyResults"/>); when it closes, its round trip ends and its temp folder is
+    /// deleted. The round trips live in SessionState, so they survive a script reload.
     /// </summary>
     [InitializeOnLoad]
     static class PolysmithWatcher
@@ -24,23 +25,28 @@ namespace Polysmith
                 EditorApplication.update += Poll;
         }
 
-        /// <summary>Whether a round trip for the prefab at <paramref name="prefabPath"/> is open.</summary>
-        public static bool IsOpen(string prefabPath)
+        /// <summary>
+        /// Whether a round trip is open for <paramref name="key"/>: a prefab's path, or a mesh's
+        /// <see cref="PolysmithMeshRoundTrip.Key"/>.
+        /// </summary>
+        public static bool IsOpen(string key)
         {
             foreach (var trip in Load().Trips)
-                if (trip.Prefab == prefabPath)
+                if (trip.Prefab == key)
                     return true;
             return false;
         }
 
-        public static void Start(string prefabPath, string folder, Process polysmith)
+        /// <summary>Follows a round trip: a prefab's (no mesh request) or a mesh's.</summary>
+        public static void Start(string key, string folder, Process polysmith, PolysmithMeshRoundTrip.Request mesh = null)
         {
             var trips = Load();
             if (trips.Trips.Count == 0)
                 EditorApplication.update += Poll;
             trips.Trips.Add(new RoundTrip
             {
-                Prefab = prefabPath,
+                Prefab = key,
+                Mesh = mesh,
                 Folder = folder,
                 Process = polysmith.Id,
                 Started = Ticks(polysmith.StartTime)
@@ -90,6 +96,16 @@ namespace Polysmith
 
         static void Apply(RoundTrip trip)
         {
+            if (trip.IsMesh)
+            {
+                var meshWarnings = new List<string>();
+                var result = PolysmithMeshRoundTrip.ApplyResults(trip.Mesh, trip.Folder, meshWarnings);
+                foreach (string warning in meshWarnings)
+                    Debug.LogWarning("Polysmith: " + warning);
+                if (result != null)
+                    Debug.Log($"Polysmith: mesh '{trip.Mesh.Name}' updated: {AssetDatabase.GetAssetPath(result)}.");
+                return;
+            }
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(trip.Prefab);
             var warnings = new List<string>();
             var reduced = PolysmithRoundTrip.ApplyResults(prefab, trip.Folder, warnings);
@@ -102,7 +118,9 @@ namespace Polysmith
         {
             _seen.Remove(trip.Folder);
             Directory.Delete(trip.Folder, true);
-            Debug.Log($"Polysmith closed: the round trip for '{trip.Prefab}' is finished.");
+            if (trip.IsMesh)
+                PolysmithMeshRoundTrip.DeleteUnusedOutput(trip.Mesh);
+            Debug.Log($"Polysmith closed: the round trip for '{(trip.IsMesh ? trip.Mesh.Name : trip.Prefab)}' is finished.");
         }
 
         // The start time tells the round trip's Polysmith apart from a later process that got the same id.
@@ -150,11 +168,16 @@ namespace Polysmith
                 SessionState.SetString(TripsKey, JsonUtility.ToJson(trips));
         }
 
-        /// <summary>One open round trip: its prefab, temp folder, Polysmith process, and the last results applied.</summary>
+        /// <summary>
+        /// One open round trip: its key (the prefab's path, or the mesh's key with its request), temp folder, Polysmith
+        /// process, and the last results applied.
+        /// </summary>
         [Serializable]
         sealed class RoundTrip
         {
             public string Prefab = "";
+            public PolysmithMeshRoundTrip.Request Mesh;
+            public bool IsMesh => Mesh != null && Mesh.Name.Length > 0;
             public string Folder = "";
             public int Process;
             public string Started = "";

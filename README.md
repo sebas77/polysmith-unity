@@ -1,6 +1,6 @@
 # Polysmith for Unity
 
-Reduce a prefab's meshes in Polysmith without leaving Unity.
+Reduce a prefab's meshes, or a single mesh asset, in Polysmith without leaving Unity.
 
 ## Install
 
@@ -33,6 +33,23 @@ the GLB assembly only when UnityGLTF 2.24.0 or newer is installed.
 
 Several prefabs can be open at once, each in its own Polysmith; a prefab that already has one open is refused
 until that Polysmith is closed.
+
+### One mesh
+
+In the Project window, right-click **one** mesh asset (a `.asset` mesh, or a mesh inside a model file) → **Optimise in
+Polysmith**. Multiple selection is not offered: a mesh drawn by several objects cannot be sent more than once.
+
+- The mesh is sent alone, at the origin, with the materials of the first object in the open scenes that draws it.
+  Skinned meshes are refused: optimise the prefab that uses them.
+- Each export is saved as `<mesh folder>/Reduced/<mesh>/<mesh>.asset` (under `Assets/Reduced/` when the mesh is in a
+  package), labelled `PolysmithReduced` and remembering its original. The original mesh is never changed. A folder that
+  already holds another mesh's result gets a numbered name (`<mesh>_2`); one left empty is deleted when Polysmith closes.
+- Every MeshFilter in the open scenes that draws the mesh, or an earlier result of it, is pointed at the result
+  (undoable; the scenes are left to save). Atlas results bring their own materials; results on the original UVs keep
+  each object's own materials. Prefab assets and closed scenes are not touched.
+- Selecting the original or a result again sends the original and overwrites the same result. One Polysmith per mesh.
+- A mesh reduced on its own does not see its neighbours: adjacent tiles reduced one by one can crack at their seams
+  unless their border edges are kept.
 
 Each reduced mesh is saved as `<prefab folder>/Reduced/<prefab>/<part>.asset` and labelled `PolysmithReduced`; the
 prefab's MeshFilters and SkinnedMeshRenderers point at it. The original meshes are never changed. Running it again
@@ -135,7 +152,7 @@ Integration tests use synthetic outputs from `PolysmithLodSetSmoke.py`; set
 
 ## Limits
 
-- Prefab assets only, not model files (FBX, OBJ) and not objects in a scene.
+- Prefab assets and single mesh assets only, not model files (FBX, OBJ) as prefabs and not objects in a scene.
 - Meshes come back with positions, normals, the first UV set (the atlas UVs when there are maps), tangents when
   there is a normal map, and their submeshes. Vertex colours, other UV sets and blend shapes are not kept.
 - Returned atlas materials use the pipeline's Lit shader; the original material's custom shader and properties outside
