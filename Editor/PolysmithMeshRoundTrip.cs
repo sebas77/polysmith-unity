@@ -40,7 +40,11 @@ namespace Polysmith
             return "mesh:" + PolysmithRoundTrip.Reference(mesh);
         }
 
-        public static Request WriteRequest(Mesh selected, string folder, List<string> warnings)
+        /// <summary>
+        /// The request for the mesh (its original, when it is a result). <paramref name="from"/>, the scene object it was
+        /// picked on, if any, gives the materials sent and, for a mesh without a name, the request's name.
+        /// </summary>
+        public static Request WriteRequest(Mesh selected, string folder, List<string> warnings, MeshFilter from = null)
         {
             // A result selected again sends its original, as a prefab showing results does.
             var (mesh, _) = PolysmithRoundTrip.OriginOf(selected, Array.Empty<Material>(), warnings);
@@ -53,6 +57,8 @@ namespace Polysmith
                     throw new NotSupportedException("Polysmith requires triangle meshes: " + mesh.name);
 
             var users = Users(mesh, warnings);
+            if (from != null && users.Remove(from))
+                users.Insert(0, from);
             var materials = Array.Empty<Material>();
             if (users.Count > 0)
                 materials = PolysmithRoundTrip.OriginOf(users[0].sharedMesh,
@@ -60,7 +66,9 @@ namespace Polysmith
             else
                 warnings.Add($"'{mesh.name}' is not drawn in the open scenes: its result is saved but no object uses it.");
 
-            string name = PolysmithRoundTrip.Sanitize(mesh.name);
+            // Meshes imported from glTF can be unnamed: the object drawing them names them.
+            string name = PolysmithRoundTrip.Sanitize(mesh.name.Length > 0 ? mesh.name
+                : users.Count > 0 ? users[0].gameObject.name : "");
             var root = new GameObject(name) { hideFlags = HideFlags.HideAndDontSave };
             var temporaryMaterials = new List<Material>();
             try

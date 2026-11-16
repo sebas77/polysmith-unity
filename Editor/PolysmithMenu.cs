@@ -10,9 +10,10 @@ namespace Polysmith
 {
     /// <summary>
     /// "Optimise in Polysmith", in the Assets menu for a prefab asset or one mesh asset, and in the Hierarchy menu for a
-    /// prefab instance (which opens the instance's prefab asset): opens the prefab's meshes, or the mesh, in a Polysmith
-    /// of its own (several can be open at once); while it is open, every export is applied (see
-    /// <see cref="PolysmithWatcher"/>). The path of Polysmith.exe is asked once and kept per machine.
+    /// prefab instance (which opens the instance's prefab asset) or, failing that, one object drawing a mesh asset (an
+    /// object of a model file's instance, for one): opens the prefab's meshes, or the mesh, in a Polysmith of its own
+    /// (several can be open at once); while it is open, every export is applied (see <see cref="PolysmithWatcher"/>).
+    /// The path of Polysmith.exe is asked once and kept per machine.
     /// </summary>
     static class PolysmithMenu
     {
@@ -33,11 +34,29 @@ namespace Polysmith
                                       AssetDatabase.Contains(mesh) ? mesh : null;
 
         [MenuItem(HierarchyMenuPath, true)]
-        static bool CanOptimiseInstance() => InstancePrefab(Selection.activeGameObject) != null;
+        static bool CanOptimiseInstance() => InstancePrefab(Selection.activeGameObject) != null || SelectedSceneMesh() != null;
 
-        // Edits the prefab asset, so every instance of it shows the result, as with the Assets menu.
+        // Edits the prefab asset, so every instance of it shows the result, as with the Assets menu. An object that is
+        // not part of an editable prefab (a model file's instance, a plain scene object) sends its mesh instead.
         [MenuItem(HierarchyMenuPath, false, HierarchyMenuPriority)]
-        static void OptimiseInstance() => Optimise(InstancePrefab(Selection.activeGameObject));
+        static void OptimiseInstance()
+        {
+            var prefab = InstancePrefab(Selection.activeGameObject);
+            if (prefab != null)
+                Optimise(prefab);
+            else
+                OptimiseMesh(SelectedSceneMesh().sharedMesh, SelectedSceneMesh());
+        }
+
+        // One scene object alone, drawing a mesh asset with a MeshRenderer.
+        static MeshFilter SelectedSceneMesh()
+        {
+            var selected = Selection.activeGameObject;
+            if (Selection.gameObjects.Length != 1 || selected == null || EditorUtility.IsPersistent(selected) ||
+                selected.TryGetComponent<MeshRenderer>(out _) == false || selected.TryGetComponent<MeshFilter>(out var filter) == false)
+                return null;
+            return filter.sharedMesh != null && AssetDatabase.Contains(filter.sharedMesh) ? filter : null;
+        }
 
         // Model files (FBX, OBJ) are prefab assets too, but they cannot be saved as prefabs.
         static bool IsEditablePrefab(GameObject asset) => PrefabUtility.IsPartOfPrefabAsset(asset) &&
@@ -76,13 +95,14 @@ namespace Polysmith
             }
         }
 
-        static void OptimiseMesh(Mesh mesh)
+        static void OptimiseMesh(Mesh mesh, MeshFilter from = null)
         {
             string key = PolysmithMeshRoundTrip.Key(mesh);
+            string shown = mesh.name.Length > 0 || from == null ? mesh.name : from.gameObject.name;
             if (PolysmithWatcher.IsOpen(key))
             {
                 EditorUtility.DisplayDialog("Optimise in Polysmith",
-                    $"Polysmith is already open for '{mesh.name}'. Close it to finish that round trip first.", "OK");
+                    $"Polysmith is already open for '{shown}'. Close it to finish that round trip first.", "OK");
                 return;
             }
             string exe = FindExe();
@@ -94,11 +114,11 @@ namespace Polysmith
             try
             {
                 var warnings = new List<string>();
-                request = PolysmithMeshRoundTrip.WriteRequest(mesh, folder, warnings);
+                request = PolysmithMeshRoundTrip.WriteRequest(mesh, folder, warnings, from);
                 foreach (string warning in warnings)
                     Debug.LogWarning("Polysmith: " + warning);
                 Launch(exe, request.Glb, folder, false, process => PolysmithWatcher.Start(key, folder, process, request));
-                Debug.Log($"Polysmith: opened mesh '{mesh.name}'. Each export updates the objects drawing it; close Polysmith to finish.");
+                Debug.Log($"Polysmith: opened mesh '{shown}'. Each export updates the objects drawing it; close Polysmith to finish.");
             }
             catch (Exception error)
             {

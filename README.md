@@ -37,7 +37,10 @@ until that Polysmith is closed.
 ### One mesh
 
 In the Project window, right-click **one** mesh asset (a `.asset` mesh, or a mesh inside a model file) → **Optimise in
-Polysmith**. Multiple selection is not offered: a mesh drawn by several objects cannot be sent more than once.
+Polysmith**. In the Hierarchy, the same entry on one object that is not part of an editable prefab (an object of a
+model file's instance, such as an imported GLB scene, or a plain scene object) sends that object's mesh the same way,
+with that object's materials; an unnamed mesh is named after it. Multiple selection is not offered: a mesh drawn by
+several objects cannot be sent more than once.
 
 - The mesh is sent alone, at the origin, with the materials of the first object in the open scenes that draws it.
   Skinned meshes are refused: optimise the prefab that uses them.

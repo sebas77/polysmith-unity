@@ -62,6 +62,9 @@ keeps running but is no longer applied. Compiles against 6000.6.2f1; NOT run.
   on close if still empty. Every MeshFilter in the open scenes drawing the original or a result is repointed (Undo,
   scene dirtied, prefab instance modifications recorded). Atlas results set their materials; original-UV results keep
   each user's own original materials when the slot count matches. Prefab assets untouched.
+- Hierarchy: the existing entry falls back to the mesh round trip for one selected object that is not part of an
+  editable prefab (RoboSim's case: MetalWall02_LOD0_7 inside the model instance of Scene_OldIndustry.glb, whose meshes
+  are unnamed). The picked object goes first among the users (its materials are sent) and names an unnamed mesh.
 - Known consequence: tiles reduced one by one can crack at seams unless their borders are kept.
 - Verified in lodtest (6000.6.8f1, testables added temporarily, manifest restored): 6 new tests + all round-trip tests
   pass. PolysmithLodSetTests.RejectsUnsafeOrUnorderedLevels(...0.8d,0.25d) fails the same way without these changes

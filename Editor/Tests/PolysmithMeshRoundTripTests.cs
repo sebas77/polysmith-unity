@@ -107,6 +107,23 @@ namespace Polysmith.Tests
         }
 
         [Test]
+        public void UnnamedSubMeshIsNamedAfterTheObjectItWasPickedOnWithThatObjectsMaterials()
+        {
+            var holder = Mesh("holder");
+            var unnamed = new Mesh { name = "", vertices = holder.vertices, triangles = holder.triangles };
+            AssetDatabase.AddObjectToAsset(unnamed, holder);
+            AssetDatabase.SaveAssets();
+            User(unnamed, Material("first"), Vector3.zero);
+            var second = Material("second");
+            var picked = User(unnamed, second, Vector3.one);
+            picked.gameObject.name = "Wall 7";
+            var request = PolysmithMeshRoundTrip.WriteRequest(unnamed, _folder, new List<string>(), picked);
+            Assert.That(request.Name, Is.EqualTo("Wall_7"));
+            AssetDatabase.TryGetGUIDAndLocalFileIdentifier(second, out string guid, out long id);
+            Assert.That(request.Materials[0], Is.EqualTo(guid + ":" + id));
+        }
+
+        [Test]
         public void UnusedOutputFolderIsDeleted()
         {
             var request = PolysmithMeshRoundTrip.WriteRequest(Mesh("tile"), _folder, new List<string>());
